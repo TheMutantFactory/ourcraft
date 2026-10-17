@@ -29,6 +29,7 @@ var _generation := 0
 ## Running mesh jobs: Array of {task, def_id, key, version, generation, result}
 var _jobs: Array = []
 var _max_jobs := maxi(1, OS.get_processor_count() - 1)
+var _depth_materials: Array = []
 var _root_node: Node3D
 var _isolated = null # PackedStringArray or null
 var _tree_dirty := false
@@ -207,6 +208,16 @@ func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 			_add_chunk_node(container, key, entry)
 
 
+## One material per tree depth; per-instance shader parameters run out of
+## global buffer space with tens of thousands of chunks.
+func _material_for_depth(depth: int) -> ShaderMaterial:
+	while _depth_materials.size() <= depth:
+		var m: ShaderMaterial = material.duplicate()
+		m.set_shader_parameter("layer", float(_depth_materials.size()))
+		_depth_materials.append(m)
+	return _depth_materials[depth]
+
+
 static func _key_name(key: Vector3i) -> String:
 	return "c_%d_%d_%d" % [key.x, key.y, key.z]
 
@@ -216,7 +227,7 @@ func _add_chunk_node(container: Node3D, key: Vector3i, entry: Dictionary) -> voi
 	mi.name = _key_name(key)
 	mi.mesh = entry.mesh
 	# Deeper objects win where faces are coplanar (see voxel.gdshader).
-	mi.set_instance_shader_parameter("layer", float(container.get_meta("path").size()))
+	mi.material_override = _material_for_depth(container.get_meta("path").size())
 	var body := StaticBody3D.new()
 	body.set_meta("path", container.get_meta("path"))
 	body.set_meta("def_id", container.get_meta("def_id"))
