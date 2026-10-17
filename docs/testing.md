@@ -17,7 +17,8 @@ tools/fuzz.sh --seed=17 --steps=400 --verbose
 
 Each seed starts from a few objects and runs random operations: add,
 remove, move, rotate, retarget (point an instance at another object),
-re-parent, make unique, create, delete, rename, change block size, edit
+re-parent, re-parent keeping the world position (as dragging in the
+outline does), make unique, create, delete, rename, change block size, edit
 voxels, undo and redo. Refusals are compared with an independent cycle
 check. After every step it checks:
 
@@ -39,7 +40,9 @@ bundle.
 A failure prints the seed, step and the operations before it, so it can be
 replayed with `--seed`. To check that the fuzzer can see bugs, two were
 planted on purpose (undo not recorded for removals, and a stale bounds
-cache after moves); both were caught.
+cache after moves); both were caught. Whether an operation recorded undo is
+judged by the newest history entry, not its length, because a full history
+(200 steps) drops its oldest entry as it records.
 
 ## Corner cases (tests/run_tests.gd)
 
@@ -86,8 +89,11 @@ operations (`--check` also runs its invariant checks, slowly).
   (19 fps). Objects now need 64+ copies to be instanced; the rest are baked
   (39–47 fps). Baked regions are now a single surface each, with the tree
   depth in UV.x.
-- **Added: re-parenting** (`Project.reparent_instance`), undoable. There's
-  no UI for it yet.
+- **Added: re-parenting** (`Project.reparent_instance`, and
+  `Project.reparent_path`, which keeps the object where it is in the world),
+  undoable. In the game, drag a row onto another row in the outline. The
+  fuzzer's `keep` operation checks that such moves never change the world
+  position.
 - **Open: intermittent renderer crash.** Three times today, Godot 4.7 crashed
   in a memory copy inside its renderer while loading scenes with thousands
   of mesh nodes. It wasn't reproducible on demand (0 of 16 retries, plus

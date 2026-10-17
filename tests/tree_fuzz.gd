@@ -30,7 +30,7 @@ var checks := true
 
 var _weights := [
 	["add", 14], ["remove", 6], ["move", 8], ["rotate", 3], ["retarget", 4],
-	["reparent", 8], ["unique", 4], ["create", 5], ["delete", 2], ["rename", 2],
+	["reparent", 8], ["keep", 5], ["unique", 4], ["create", 5], ["delete", 2], ["rename", 2],
 	["unit", 1], ["edit", 12], ["undo", 8], ["redo", 4],
 ]
 
@@ -51,9 +51,9 @@ func _init(seed: int, project: Project = null, word_list: Array = []) -> void:
 func step() -> bool:
 	steps += 1
 	var op := _pick_op()
-	var undoable := op in ["add", "remove", "move", "rotate", "retarget", "reparent", "edit"]
+	var undoable := op in ["add", "remove", "move", "rotate", "retarget", "reparent", "keep", "edit"]
 	var pre := _snapshot() if undoable and checks else ""
-	var undo_before := p._undo.size()
+	var undo_before = _last_undo()
 	var note: String = call("_op_" + op)
 	if note == "":
 		return true
@@ -158,6 +158,44 @@ func _op_reparent() -> String:
 	return "%s from %s to %s (%s)" % [inst.id, from.name, to.name, "ok" if ok else "refused"]
 
 
+## Like dragging in the outline: move a placed instance into another placed
+## object, keeping its world position.
+func _op_keep() -> String:
+	var path := _random_path()
+	var to_path := _random_path()
+	if path.is_empty():
+		return ""
+	var world := p.path_transform(path)
+	var inst := p.instance_at(path)
+	var expect_ok := to_path != path.slice(0, path.size() - 1) and not _reaches(inst.def_id, p.def_at(to_path).id)
+	var why := p.reparent_path(path, to_path)
+	if (why == "") != expect_ok:
+		fail("keep-in-place move %s -> %s: got '%s', expected ok=%s" % ["/".join(path), "/".join(to_path), why, expect_ok])
+	if why == "":
+		var moved := to_path.duplicate()
+		moved.append(inst.id)
+		if not p.path_transform(moved).is_equal_approx(world):
+			fail("keep-in-place move changed the world position")
+	return "%s -> %s (%s)" % [inst.id, p.def_at(to_path).name, "ok" if why == "" else why]
+
+
+func _last_undo():
+	return null if p._undo.is_empty() else p._undo.back()
+
+
+## A random path from the world down the tree (possibly the world itself).
+func _random_path() -> PackedStringArray:
+	var path := PackedStringArray()
+	var def := p.root()
+	while not def.children.is_empty() and path.size() < Project.MAX_DEPTH and rng.randf() < 0.7:
+		var inst: ObjectInstance = def.children[rng.randi_range(0, def.children.size() - 1)]
+		if not p.defs.has(inst.def_id):
+			break
+		path.append(inst.id)
+		def = p.defs[inst.def_id]
+	return path
+
+
 ## Like the game's "make unique": fork the object (not undoable), then point
 ## the instance at the fork (undoable).
 func _op_unique() -> String:
@@ -167,7 +205,7 @@ func _op_unique() -> String:
 	var inst: ObjectInstance = parent.children[rng.randi_range(0, parent.children.size() - 1)]
 	var fork := p.fork_def(inst.def_id)
 	var pre := _snapshot() if checks else ""
-	var undo_before := p._undo.size()
+	var undo_before = _last_undo()
 	p.set_instance_def(parent.id, inst.id, fork.id)
 	if inst.def_id != fork.id:
 		fail("make unique didn't take")
@@ -252,9 +290,11 @@ func _check_bounds_cache() -> void:
 
 ## Undo must restore exactly the state before the op, redo exactly the
 ## state after it. Ops that changed nothing must not add history.
-func _check_undo_symmetry(op: String, pre: String, undo_before: int) -> void:
+func _check_undo_symmetry(op: String, pre: String, undo_before) -> void:
 	var post := _snapshot()
-	if p._undo.size() == undo_before:
+	# Compare the newest entry, not the length: once history is full,
+	# recording a step drops the oldest and the length stays the same.
+	if is_same(_last_undo(), undo_before):
 		if post != pre:
 			fail("%s changed the project without recording undo" % op)
 		return

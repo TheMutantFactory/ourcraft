@@ -436,6 +436,31 @@ func reparent_instance(from_id: String, inst_id: String, to_id: String, offset: 
 	return true
 
 
+## Moves the instance at `path` into the object at `to_path`, keeping it
+## where it is in the world (its offset and rotation are recomputed for the
+## new parent's space). `to_path` is one placement of the target object, so
+## the move is measured against that copy. Returns "" on success or a reason
+## it was refused.
+func reparent_path(path: PackedStringArray, to_path: PackedStringArray) -> String:
+	if path.is_empty():
+		return "the world itself can't be moved"
+	var inst := instance_at(path)
+	var from := def_at(path.slice(0, path.size() - 1))
+	var to := def_at(to_path)
+	if inst == null or from == null or to == null:
+		return "that object no longer exists"
+	if path.slice(0, path.size() - 1) == to_path:
+		return "it's already there"
+	if would_cycle(to.id, inst.def_id):
+		return "%s is part of %s" % [to.name, defs[inst.def_id].name]
+	var local := path_transform(to_path).affine_inverse() * path_transform(path)
+	var rot := ObjectInstance.quarter_turns_of(local.basis)
+	if rot < 0:
+		return "the new parent is rotated in a way the object can't follow"
+	var ok := reparent_instance(from.id, inst.id, to.id, Vector3i(local.origin.round()), rot)
+	return "" if ok else "the move was refused"
+
+
 func can_undo() -> bool:
 	return not _undo.is_empty() and _depth == 0
 

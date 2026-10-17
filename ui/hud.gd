@@ -5,6 +5,8 @@ extends CanvasLayer
 
 signal outline_selected(path: PackedStringArray)
 signal outline_activated(path: PackedStringArray)
+## An outline row was dragged onto another: move it into that object.
+signal reparent_requested(path: PackedStringArray, to_path: PackedStringArray)
 signal command(name: String)
 signal place_object(def_id: String)
 signal rename_object(def_id: String, new_name: String)
@@ -231,6 +233,7 @@ func _build_panel(root: Control) -> void:
 	outline.item_selected.connect(_on_outline_selected)
 	outline.item_activated.connect(_on_outline_activated)
 	outline.item_collapsed.connect(_on_outline_item_collapsed)
+	outline.set_drag_forwarding(_outline_get_drag, _outline_can_drop, _outline_drop)
 	col.add_child(outline)
 	col.add_child(_buttons([["Edit", "edit"], ["Leave", "leave"], ["Isolate", "isolate"]]))
 	col.add_child(_buttons([["Move", "grab"], ["Rotate", "rotate"], ["Unique", "unique"], ["Delete", "delete"]]))
@@ -441,6 +444,49 @@ func _outline_children(item: TreeItem, def: ObjectDef, path: PackedStringArray, 
 		var p := path.duplicate()
 		p.append(inst.id)
 		_outline_row(outline.create_item(item), child_def, p, depth + 1)
+
+
+# Dragging a row onto another row moves the dragged object into it.
+
+func _outline_get_drag(at: Vector2) -> Variant:
+	var item := outline.get_item_at_position(at)
+	if item == null or item.get_metadata(0) == null:
+		return null
+	var path: PackedStringArray = item.get_metadata(0)
+	if path.is_empty():
+		return null # the world can't be moved
+	outline.drop_mode_flags = Tree.DROP_MODE_ON_ITEM
+	var preview := Label.new()
+	preview.text = "Move " + item.get_text(0).trim_prefix("✎ ")
+	outline.set_drag_preview(preview)
+	return {"outline_path": path}
+
+
+func _outline_can_drop(at: Vector2, data: Variant) -> bool:
+	if not (data is Dictionary and data.has("outline_path")) or _outline_project == null:
+		return false
+	var item := outline.get_item_at_position(at)
+	if item == null or item.get_metadata(0) == null:
+		return false
+	return can_move(data.outline_path, item.get_metadata(0))
+
+
+## Whether the outline row at path may be dropped onto to_path.
+func can_move(path: PackedStringArray, to_path: PackedStringArray) -> bool:
+	if _outline_project == null or path.is_empty():
+		return false
+	if to_path == path.slice(0, path.size() - 1) or to_path == path:
+		return false
+	var inst := _outline_project.instance_at(path)
+	var to := _outline_project.def_at(to_path)
+	return inst != null and to != null and not _outline_project.would_cycle(to.id, inst.def_id)
+
+
+func _outline_drop(at: Vector2, data: Variant) -> void:
+	outline.drop_mode_flags = Tree.DROP_MODE_DISABLED
+	var item := outline.get_item_at_position(at)
+	if item != null and item.get_metadata(0) != null:
+		reparent_requested.emit(data.outline_path, item.get_metadata(0))
 
 
 ## Expanding a row replaces its placeholder with the real children.

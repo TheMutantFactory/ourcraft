@@ -42,6 +42,8 @@ func _run() -> void:
 	test_loads_hand_formatted_objects_json()
 	test_outline_builds_rows_lazily()
 	test_corner_reparent()
+	test_reparent_keeps_world_position()
+	test_outline_drop_rules()
 	test_corner_depth_limit()
 	test_corner_wide_and_empty()
 	test_corner_rotation_and_far_offsets()
@@ -523,6 +525,45 @@ func test_corner_reparent() -> void:
 	check(a.children.is_empty() and p.root().find_child(ib.id) == ib, "B left A and joined the world with the same id")
 	p.undo()
 	check(a.find_child(ib.id) != null and p.root().find_child(ib.id) == null, "undo puts B back in A")
+
+
+func test_reparent_keeps_world_position() -> void:
+	var p := Project.create_empty(0.01)
+	var house := p.create_def("House", 10)
+	var room := p.create_def("Room", 5)
+	var lamp := p.create_def("Lamp", 1)
+	var ih := p.add_instance(p.root_id, house.id, Vector3i(1000, 0, -300), 1)
+	var ir := p.add_instance(house.id, room.id, Vector3i(40, 10, 70), 2)
+	var il := p.add_instance(room.id, lamp.id, Vector3i(13, 5, -8), 3)
+	var lamp_path := PackedStringArray([ih.id, ir.id, il.id])
+	var world := p.path_transform(lamp_path)
+	check(p.reparent_path(lamp_path, PackedStringArray()) == "", "move the lamp up to the world")
+	var up := PackedStringArray([il.id])
+	check(p.path_transform(up).is_equal_approx(world), "the lamp stayed in place in the world")
+	check(p.reparent_path(up, PackedStringArray([ih.id])) == "", "move it into the rotated house")
+	check(p.path_transform(PackedStringArray([ih.id, il.id])).is_equal_approx(world), "still in place inside the rotated house")
+	check(p.reparent_path(PackedStringArray([ih.id]), PackedStringArray([ih.id, ir.id])) != "", "can't move the house into its own room")
+	check(p.reparent_path(PackedStringArray(), PackedStringArray([ih.id])) != "", "the world can't be moved")
+	p.undo()
+	check(p.root().find_child(il.id) != null, "undo brings the lamp back to the world")
+
+
+func test_outline_drop_rules() -> void:
+	var hud := Hud.new()
+	root.add_child(hud)
+	var p := Demo.build(0.01)
+	hud.refresh_outline(p, PackedStringArray(), null)
+	var path := PackedStringArray()
+	var def := p.root()
+	while not def.children.is_empty():
+		path.append(def.children[-1].id)
+		def = p.defs[def.children[-1].def_id]
+	# path: Street > House > Kitchen > Table > Fork
+	check(hud.can_move(path, PackedStringArray()), "a fork can be dropped on the world")
+	check(not hud.can_move(path, path.slice(0, path.size() - 1)), "dropping on its own parent does nothing")
+	check(not hud.can_move(path.slice(0, 2), path.slice(0, 3)), "a house can't be dropped into its own kitchen")
+	check(not hud.can_move(PackedStringArray(), path), "the world can't be dragged")
+	hud.free()
 
 
 ## Paths deeper than Project.MAX_DEPTH (32) aren't rendered. This pins the
