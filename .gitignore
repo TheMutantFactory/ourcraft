@@ -15,3 +15,9 @@ export_credentials.cfg
 .mono/
 data_*/
 mono_crash.*.json
+
+# Native extension build output
+bin/
+native/extension_api.json
+native/src/*.os
+native/.sconsign*.dblite
