@@ -21,6 +21,8 @@ func _init() -> void:
 	test_save_load_round_trip()
 	test_bundle_export_import()
 	test_incremental_save()
+	test_loads_legacy_deflate_chunks()
+	test_chunks_stored_compressed()
 	test_demo_tree_depth()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -38,7 +40,7 @@ func test_grid_fill_and_counts() -> void:
 	var g := VoxelGrid.new()
 	g.fill_box(Vector3i(0, 0, 0), Vector3i(40, 2, 3), 5)
 	check(g.solid_count() == 40 * 2 * 3, "fill count")
-	check(g.chunks.size() == 2, "fill spans two chunks")
+	check(g.chunk_count() == 2, "fill spans two chunks")
 	check(g.get_cell(Vector3i(39, 1, 2)) == 5, "cell value")
 	g.fill_box(Vector3i(0, 0, 0), Vector3i(40, 2, 3), 0)
 	check(g.is_empty(), "erasing frees chunks")
@@ -122,7 +124,7 @@ func test_mesher_matches_brute_force() -> void:
 	g.fill_box(Vector3i(4, 4, 4), Vector3i(20, 9, 30), 2)
 	var total := 0.0
 	var expected := 0
-	for key in g.chunks:
+	for key in g.keys():
 		total += _face_area(Mesher.build(g, key, Project.DEFAULT_PALETTE, 1.0))
 		expected += _brute_faces(g, key)
 	check(is_equal_approx(total, float(expected)), "mesh area %s == exposed faces %d" % [total, expected])
@@ -156,15 +158,15 @@ func test_native_matches_gdscript() -> void:
 	Native.enabled = true
 	var gn: VoxelGrid = grids[0]
 	var gs: VoxelGrid = grids[1]
-	check(gn.chunks.keys() == gs.chunks.keys() and gn.counts == gs.counts, "native fill matches GDScript")
+	check(gn.keys() == gs.keys() and gn.counts == gs.counts, "native fill matches GDScript")
 	var same := true
-	for key in gn.chunks:
-		if gn.chunks[key] != gs.chunks[key]:
+	for key in gn.keys():
+		if gn.get_chunk(key) != gs.get_chunk(key):
 			same = false
 	check(same, "native fill cell data matches")
 	var pal: Array = Project.DEFAULT_PALETTE
 	var mesh_same := true
-	for key in gn.chunks:
+	for key in gn.keys():
 		var input := Mesher.gather(gn, key)
 		var a: Dictionary = Native.kernels().mesh_chunk(input, key, pal, 0.01)
 		var b := Mesher.build_gdscript(input, key, pal, 0.01)
@@ -302,6 +304,33 @@ func test_incremental_save() -> void:
 	check(same, "incremental saves load back identical")
 	q.save_dir(dir)
 	check(q.last_save_written == 0, "a freshly loaded project saves nothing back")
+
+
+## Version 1 object files stored chunks as deflate; they must still load.
+func test_loads_legacy_deflate_chunks() -> void:
+	var def := ObjectDef.new()
+	def.id = "legacy"
+	def.name = "Legacy"
+	def.grid.fill_box(Vector3i(-3, 0, 0), Vector3i(40, 5, 7), 6)
+	var d := def.to_dict()
+	d.version = 1
+	d.chunk_format = ObjectDef.LEGACY_CHUNK_FORMAT
+	for c in d.chunks:
+		var k: Array = c.key
+		var raw: PackedByteArray = def.grid.get_chunk(Vector3i(k[0], k[1], k[2]))
+		c.data = Marshalls.raw_to_base64(raw.compress(FileAccess.COMPRESSION_DEFLATE))
+	var back := ObjectDef.from_dict(JSON.parse_string(JSON.stringify(d)))
+	check(back.grid.solid_count() == 43 * 5 * 7 and back.grid.get_cell(Vector3i(-3, 4, 6)) == 6, "legacy deflate chunks load")
+
+
+func test_chunks_stored_compressed() -> void:
+	var g := VoxelGrid.new()
+	g.fill_box(Vector3i.ZERO, Vector3i(10, 10, 10), 3)
+	var packed: PackedByteArray = g.get_packed(Vector3i.ZERO)
+	check(packed.size() < 1024, "a mostly empty chunk is stored small (%d bytes)" % packed.size())
+	var copy := g.copy()
+	copy.fill_box(Vector3i.ZERO, Vector3i(1, 1, 1), 0)
+	check(g.solid_count() == 1000 and copy.solid_count() == 999, "copies don't share edits")
 
 
 func test_bundle_export_import() -> void:

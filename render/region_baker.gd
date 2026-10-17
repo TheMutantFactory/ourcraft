@@ -16,6 +16,8 @@ const REGION := 8.0
 var material_for_depth: Callable
 ## Returns a definition's chunk bounds in local metres.
 var bounds_of: Callable
+## Returns mesh arrays for (def_id, chunk key), or null if nothing visible.
+var arrays_for: Callable
 
 ## Vector3i region -> {members: Array[int], sig: String, node: MeshInstance3D}
 var _regions: Dictionary = {}
@@ -67,16 +69,21 @@ func def_changed(def_id: String) -> void:
 		_dirty[key] = true
 
 
-func has_def(def_id: String) -> bool:
-	return _by_def.has(def_id)
-
-
 func pending() -> int:
 	return _dirty.size()
 
 
 func region_count() -> int:
 	return _regions.size()
+
+
+func quad_count() -> int:
+	var n := 0
+	for r in _regions.values():
+		if r.node != null and r.node.mesh != null:
+			for si in r.node.mesh.get_surface_count():
+				n += r.node.mesh.surface_get_array_index_len(si) / 6
+	return n
 
 
 ## Rebakes dirty regions, spending at most budget_usec (0 = all).
@@ -104,6 +111,8 @@ func _bake(key: Vector3i, meshes: Dictionary) -> void:
 		return
 	# depth -> [verts, normals, colors, indices]
 	var parts := {}
+	# Objects appear several times in a region; mesh each chunk once.
+	var cache := {}
 	for i in r.members:
 		var pl: Dictionary = _placements[i]
 		var entries: Dictionary = meshes.get(pl.def_id, {})
@@ -115,11 +124,13 @@ func _bake(key: Vector3i, meshes: Dictionary) -> void:
 			parts[pl.depth] = part
 		var xform: Transform3D = pl.xform
 		var rot := Transform3D(xform.basis, Vector3.ZERO)
-		for chunk in entries.values():
-			# Meshes of objects that only just became baked have no CPU copy.
-			if not chunk.has("arrays"):
-				chunk.arrays = (chunk.mesh as ArrayMesh).surface_get_arrays(0)
-			var arrays: Array = chunk.arrays
+		for chunk_key in entries:
+			var ck := "%s|%s" % [pl.def_id, chunk_key]
+			if not cache.has(ck):
+				cache[ck] = arrays_for.call(pl.def_id, chunk_key)
+			if cache[ck] == null:
+				continue
+			var arrays: Array = cache[ck]
 			var base: int = part[0].size()
 			# Transform3D * PackedVector3Array runs natively.
 			part[0].append_array(xform * (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array))

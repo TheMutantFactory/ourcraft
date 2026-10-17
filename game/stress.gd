@@ -147,7 +147,9 @@ func _measure(n: int, make: Callable) -> Dictionary:
 		for key in view._meshes[def_id]:
 			chunks += 1
 			var mesh: ArrayMesh = view._meshes[def_id][key].mesh
-			quads += mesh.surface_get_array_index_len(0) / 6
+			if mesh != null:
+				quads += mesh.surface_get_array_index_len(0) / 6
+	quads += view.baked_quad_count()
 	r.chunks = chunks
 	r.quads = quads
 	r.nodes = get_tree().get_node_count()
