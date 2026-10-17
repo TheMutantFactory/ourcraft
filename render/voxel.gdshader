@@ -3,9 +3,10 @@ shader_type spatial;
 // nudged slightly toward the camera, so where a child and an ancestor have
 // faces in the same plane the child always wins instead of z-fighting.
 
-// Depth of the rendered instance in the object tree (World = 0), set per
-// MeshInstance3D so instances keep sharing one mesh.
-instance uniform float layer = 0.0;
+// Depth of the rendered instance in the object tree (World = 0). WorldView
+// keeps one material per depth and sets it as each chunk's material
+// override, so instances keep sharing one mesh.
+uniform float layer = 0.0;
 // Fraction of the view distance each layer moves toward the camera.
 uniform float bias_per_layer = 0.00001;
 uniform float roughness_value = 0.88;
