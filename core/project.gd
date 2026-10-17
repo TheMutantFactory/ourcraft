@@ -160,6 +160,16 @@ func delete_def(def_id: String) -> bool:
 	return true
 
 
+## Instance count for every object, in one pass (usage_count per object
+## would scan every object each time).
+func usage_counts() -> Dictionary:
+	var counts := {}
+	for def in defs.values():
+		for inst in def.children:
+			counts[inst.def_id] = int(counts.get(inst.def_id, 0)) + 1
+	return counts
+
+
 func usage_count(def_id: String) -> int:
 	var n := 0
 	for def in defs.values():

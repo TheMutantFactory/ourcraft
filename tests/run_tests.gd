@@ -28,6 +28,7 @@ func _init() -> void:
 	test_pack_compacts_garbage()
 	test_loads_and_converts_v1_folder()
 	test_loads_hand_formatted_objects_json()
+	test_outline_builds_rows_lazily()
 	test_demo_tree_depth()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -453,6 +454,32 @@ func test_loads_hand_formatted_objects_json() -> void:
 	check(_same_objects(p, q), "reformatted objects.json still loads")
 	q.save_dir(dir)
 	check(q.last_save_written == q.defs.size(), "objects from a reformatted file are rewritten")
+
+
+func test_outline_builds_rows_lazily() -> void:
+	var hud := Hud.new()
+	# The tests run before the first frame, so build the HUD's controls now;
+	# it's freed again before a frame could run _ready a second time.
+	hud._ready()
+	var p := Demo.build(0.01)
+	hud.refresh_outline(p, PackedStringArray(), null)
+	var world := hud.outline.get_root()
+	var street := world.get_first_child()
+	check(street.collapsed and street.get_child_count() == 1 and street.get_first_child().get_metadata(0) == null,
+		"closed rows hold only a placeholder")
+	street.collapsed = false
+	check(street.get_child_count() == 3 and street.get_first_child().get_metadata(0) != null,
+		"expanding a row builds its real children (%d)" % street.get_child_count())
+	# Selecting a deep path opens its branch.
+	var path := PackedStringArray()
+	var def := p.root()
+	while not def.children.is_empty():
+		path.append(def.children[-1].id)
+		def = p.defs[def.children[-1].def_id]
+	hud.refresh_outline(p, PackedStringArray(), path)
+	var sel := hud.outline.get_selected()
+	check(sel != null and sel.get_metadata(0) == path, "the selected deep row is built and selected")
+	hud.free()
 
 
 func test_bundle_export_import() -> void:
