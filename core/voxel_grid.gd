@@ -92,20 +92,15 @@ func _fill_chunk(key: Vector3i, lmin: Vector3i, lmax: Vector3i, value: int) -> b
 	var data: PackedByteArray = chunks[key]
 	var count: int = counts[key]
 	var changed := false
-	for z in range(lmin.z, lmax.z):
-		for y in range(lmin.y, lmax.y):
-			var row := (y << SHIFT) + (z << (SHIFT * 2))
-			for x in range(lmin.x, lmax.x):
-				var i := row + x
-				var old := data[i]
-				if old == value:
-					continue
-				changed = true
-				if old == 0:
-					count += 1
-				elif value == 0:
-					count -= 1
-				data[i] = value
+	var native := Native.kernels()
+	if native != null:
+		var r: Array = native.fill_chunk(data, lmin, lmax, value)
+		data = r[0]
+		count += int(r[1])
+		changed = r[2]
+	else:
+		changed = _fill_rows(data, lmin, lmax, value)
+		count = data.size() - data.count(0)
 	if not changed:
 		if count == 0:
 			_erase_chunk(key)
@@ -117,6 +112,20 @@ func _fill_chunk(key: Vector3i, lmin: Vector3i, lmax: Vector3i, value: int) -> b
 		counts[key] = count
 		_bounds.erase(key)
 	return true
+
+
+## GDScript fallback for VoxelKernels.fill_chunk. Edits data in place.
+static func _fill_rows(data: PackedByteArray, lmin: Vector3i, lmax: Vector3i, value: int) -> bool:
+	var changed := false
+	for z in range(lmin.z, lmax.z):
+		for y in range(lmin.y, lmax.y):
+			var row := (y << SHIFT) + (z << (SHIFT * 2))
+			for x in range(lmin.x, lmax.x):
+				var i := row + x
+				if data[i] != value:
+					data[i] = value
+					changed = true
+	return changed
 
 
 func _erase_chunk(key: Vector3i) -> void:

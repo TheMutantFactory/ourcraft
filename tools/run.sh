@@ -4,6 +4,7 @@
 #   tools/run.sh --shot=out.png         save a screenshot and quit
 set -euo pipefail
 source "$(dirname "$0")/_godot.sh"
+native_hint
 ensure_imported
 if [[ $# -gt 0 ]]; then
 	exec "$GODOT_BIN" --path "$ROOT" -- "$@"

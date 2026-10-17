@@ -23,15 +23,15 @@ const AXES := [[1, 2, false], [0, 2, true], [0, 1, false]]
 
 
 ## Snapshot of the chunk and its neighbours: [own, -x, +x, -y, +y, -z, +z],
-## with null for missing chunks. PackedByteArrays are copy-on-write, so this
-## is cheap and later edits on the main thread don't affect it.
+## with null for missing chunks. The copies keep a worker's input stable
+## while the main thread goes on editing.
 static func gather(grid: VoxelGrid, key: Vector3i) -> Array:
-	var out := [grid.chunks.get(key)]
+	var out := [grid.get_chunk_copy(key)]
 	for d in 3:
 		for side in [-1, 1]:
 			var nk := key
 			nk[d] += side
-			out.append(grid.chunks.get(nk))
+			out.append(grid.get_chunk_copy(nk))
 	return out
 
 
@@ -42,6 +42,15 @@ static func build(grid: VoxelGrid, key: Vector3i, palette: Array, cell_m: float)
 ## Returns {} for a chunk with no visible faces, otherwise
 ## {"arrays": Array (Mesh.ARRAY_MAX), "faces": PackedVector3Array}.
 static func build_from(input: Array, key: Vector3i, palette: Array, cell_m: float) -> Dictionary:
+	var native := Native.kernels()
+	if native != null:
+		return native.mesh_chunk(input, key, palette, cell_m)
+	return build_gdscript(input, key, palette, cell_m)
+
+
+## The GDScript mesher, used when the native extension isn't built and as
+## the reference the native one is tested against.
+static func build_gdscript(input: Array, key: Vector3i, palette: Array, cell_m: float) -> Dictionary:
 	var data = input[0]
 	if data == null:
 		return {}

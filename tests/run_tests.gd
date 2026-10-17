@@ -7,11 +7,13 @@ var _count := 0
 
 
 func _init() -> void:
+	print("native extension: %s" % ("loaded" if Native.available() else "not built (GDScript paths)"))
 	test_grid_fill_and_counts()
 	test_negative_coordinates()
 	test_mesher_merges_faces()
 	test_mesher_matches_brute_force()
 	test_mesher_uniform_chunk_with_partial_neighbour()
+	test_native_matches_gdscript()
 	test_cycle_detection()
 	test_paths_and_bounds()
 	test_undo_redo()
@@ -132,6 +134,54 @@ func test_mesher_uniform_chunk_with_partial_neighbour() -> void:
 	g.set_cell(Vector3i(-1, 0, 0), 1)
 	var own := _face_area(Mesher.build(g, Vector3i.ZERO, Project.DEFAULT_PALETTE, 1.0))
 	check(is_equal_approx(own, 6.0 * 1024.0 - 2.0), "uniform chunk leaves holes where neighbours touch: %s" % own)
+
+
+## Runs the same edits and meshing through both implementations and
+## requires identical results.
+func test_native_matches_gdscript() -> void:
+	if not Native.available():
+		print("skipping native comparison: extension not built")
+		return
+	var grids := []
+	for use_native in [true, false]:
+		Native.enabled = use_native
+		seed(99)
+		var g := VoxelGrid.new()
+		for i in 400:
+			var a := Vector3i(randi_range(-20, 50), randi_range(-20, 50), randi_range(-20, 50))
+			var size := Vector3i(randi_range(1, 30), randi_range(1, 30), randi_range(1, 30))
+			g.fill_box(a, a + size, randi_range(0, 4))
+		grids.append(g)
+	Native.enabled = true
+	var gn: VoxelGrid = grids[0]
+	var gs: VoxelGrid = grids[1]
+	check(gn.chunks.keys() == gs.chunks.keys() and gn.counts == gs.counts, "native fill matches GDScript")
+	var same := true
+	for key in gn.chunks:
+		if gn.chunks[key] != gs.chunks[key]:
+			same = false
+	check(same, "native fill cell data matches")
+	var pal: Array = Project.DEFAULT_PALETTE
+	var mesh_same := true
+	for key in gn.chunks:
+		var input := Mesher.gather(gn, key)
+		var a: Dictionary = Native.kernels().mesh_chunk(input, key, pal, 0.01)
+		var b := Mesher.build_gdscript(input, key, pal, 0.01)
+		if a.is_empty() != b.is_empty():
+			mesh_same = false
+			continue
+		if a.is_empty():
+			continue
+		for k in [Mesh.ARRAY_VERTEX, Mesh.ARRAY_NORMAL, Mesh.ARRAY_INDEX]:
+			if a.arrays[k] != b.arrays[k]:
+				mesh_same = false
+		var ca: PackedColorArray = a.arrays[Mesh.ARRAY_COLOR]
+		var cb: PackedColorArray = b.arrays[Mesh.ARRAY_COLOR]
+		for i in ca.size():
+			if not ca[i].is_equal_approx(cb[i]):
+				mesh_same = false
+				break
+	check(mesh_same, "native mesh matches GDScript mesh")
 
 
 func test_cycle_detection() -> void:

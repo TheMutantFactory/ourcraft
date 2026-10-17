@@ -20,7 +20,30 @@ to use a different copy.
 tools/run.sh          # play (tools/run.sh --demo starts a fresh demo street)
 tools/test.sh         # headless core tests; non-zero exit on failure
 tools/edit.sh         # open in the Godot editor
+tools/build-native.sh # build the C++ extension (recommended, see below)
 ```
+
+### Native extension
+
+Filling and meshing voxels run in a small C++ GDExtension (`native/`), which
+is about 50× faster than the GDScript versions. A 1 m cube at 1 cm resolution
+takes a couple of milliseconds. Without the extension, the game falls back
+to GDScript automatically.
+
+```bash
+git submodule update --init native/godot-cpp
+python3 -m pip install --user scons
+tools/build-native.sh
+```
+
+The first build compiles godot-cpp and takes about five minutes. Later builds
+take seconds. The output goes to `bin/`, which isn't committed. The tests
+compare the native and GDScript results. Set `OURCRAFT_NO_NATIVE=1` to force
+the GDScript paths.
+
+Known issue: Godot 4.7 can crash while exiting the first import of a fresh
+checkout after the extension is built. The import still completes, the tools
+scripts retry it automatically, and later runs are unaffected.
 
 The first launch builds a demo street (World › Street › House › Kitchen ›
 Table › Fork). Press **Ctrl+S** to save it to
@@ -70,4 +93,5 @@ Table › Fork). Press **Ctrl+S** to save it to
 - `game/`: player controller and input handling
 - `ui/`: HUD and side panel
 - `tests/`: headless core tests
-- `tools/`: run, test and editor launch scripts
+- `tools/`: run, test, editor and native build scripts
+- `native/`: C++ GDExtension for voxel fill and meshing (godot-cpp is a submodule)

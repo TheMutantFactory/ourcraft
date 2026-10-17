@@ -4,8 +4,10 @@ extends Node3D
 ## object definition and shared by every instance of it, so instancing is
 ## cheap and an edit shows up in every copy at once.
 
-## Main-thread time per frame for uploading finished meshes.
+## Main-thread time per frame for uploading meshes from worker jobs.
 const UPLOAD_BUDGET_USEC := 4000
+## Main-thread time per frame for meshing inline with the native mesher.
+const INLINE_BUDGET_USEC := 8000
 
 var project: Project
 var material: StandardMaterial3D
@@ -33,6 +35,7 @@ var _tree_dirty := false
 
 
 func _ready() -> void:
+	Native.kernels() # initialise on the main thread before workers use it
 	material = StandardMaterial3D.new()
 	material.vertex_color_use_as_albedo = true
 	material.vertex_color_is_srgb = true
@@ -86,8 +89,29 @@ func _on_structure_changed() -> void:
 func _process(_delta: float) -> void:
 	if _tree_dirty:
 		rebuild_tree()
-	_collect_jobs(UPLOAD_BUDGET_USEC)
-	_dispatch_jobs()
+	if Native.available():
+		_mesh_inline(INLINE_BUDGET_USEC)
+	else:
+		_collect_jobs(UPLOAD_BUDGET_USEC)
+		_dispatch_jobs()
+
+
+## With the native mesher a chunk takes ~20 µs, so meshing on the main
+## thread within a time budget beats the latency of handing work to threads.
+func _mesh_inline(budget_usec: int) -> void:
+	var start := Time.get_ticks_usec()
+	_collect_jobs(0) # finish anything started before the extension loaded
+	for def_id in _dirty.keys():
+		var def: ObjectDef = project.defs.get(def_id)
+		var keys: Dictionary = _dirty[def_id]
+		for key in keys.keys():
+			if budget_usec > 0 and Time.get_ticks_usec() - start > budget_usec:
+				return
+			keys.erase(key)
+			if def != null:
+				var built := Mesher.build_from(Mesher.gather(def.grid, key), key, project.palette, project.voxel_size * def.unit)
+				_apply(def_id, key, built)
+		_dirty.erase(def_id)
 
 
 ## Starts mesh jobs on the worker pool for dirty chunks, skipping chunks
@@ -147,6 +171,9 @@ func _collect_jobs(budget_usec: int) -> void:
 func flush() -> void:
 	if _tree_dirty:
 		rebuild_tree()
+	if Native.available():
+		_mesh_inline(0)
+		return
 	while not _jobs.is_empty() or not _dirty.is_empty():
 		_dispatch_jobs()
 		_collect_jobs(0)

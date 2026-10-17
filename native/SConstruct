@@ -1,0 +1,12 @@
+#!/usr/bin/env python
+# Builds the Ourcraft native extension into ../bin. Run via tools/build-native.sh.
+import os
+
+env = SConscript("godot-cpp/SConstruct")
+env.Append(CPPPATH=["src/"])
+sources = Glob("src/*.cpp")
+
+suffix = env["suffix"].replace(".dev", "").replace(".universal", "")
+target = "../bin/libourcraft{}{}".format(suffix, env["SHLIBSUFFIX"])
+library = env.SharedLibrary(target, source=sources)
+Default(library)

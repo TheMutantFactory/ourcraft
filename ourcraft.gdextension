@@ -1,0 +1,14 @@
+[configuration]
+
+entry_symbol = "ourcraft_native_init"
+compatibility_minimum = "4.4"
+reloadable = true
+
+[libraries]
+
+macos.debug = "res://bin/libourcraft.macos.template_debug.dylib"
+macos.release = "res://bin/libourcraft.macos.template_release.dylib"
+linux.debug.x86_64 = "res://bin/libourcraft.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://bin/libourcraft.linux.template_release.x86_64.so"
+windows.debug.x86_64 = "res://bin/libourcraft.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/libourcraft.windows.template_release.x86_64.dll"
