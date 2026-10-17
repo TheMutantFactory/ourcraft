@@ -23,6 +23,11 @@ func _init() -> void:
 	test_incremental_save()
 	test_loads_legacy_deflate_chunks()
 	test_chunks_stored_compressed()
+	test_pack_dedupes_and_appends()
+	test_pack_survives_truncated_append()
+	test_pack_compacts_garbage()
+	test_loads_and_converts_v1_folder()
+	test_loads_hand_formatted_objects_json()
 	test_demo_tree_depth()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -294,7 +299,7 @@ func test_incremental_save() -> void:
 	p.save_dir(dir)
 	p.delete_def(spare.id)
 	p.save_dir(dir)
-	check(not FileAccess.file_exists(dir.path_join("objects").path_join(spare.id + ".json")), "deleted object's file removed")
+	check(not FileAccess.get_file_as_string(dir.path_join("objects.json")).contains(spare.id), "deleted object's entry removed")
 	var q := Project.load_dir(dir)
 	var same := q != null and q.defs.size() == p.defs.size()
 	if same:
@@ -331,6 +336,123 @@ func test_chunks_stored_compressed() -> void:
 	var copy := g.copy()
 	copy.fill_box(Vector3i.ZERO, Vector3i(1, 1, 1), 0)
 	check(g.solid_count() == 1000 and copy.solid_count() == 999, "copies don't share edits")
+
+
+func _fresh_dir(name: String) -> String:
+	var dir := ProjectSettings.globalize_path("user://test_projects/" + name)
+	if DirAccess.dir_exists_absolute(dir):
+		for sub in ["", "objects"]:
+			var d := dir.path_join(sub)
+			if not DirAccess.dir_exists_absolute(d):
+				continue
+			for f in DirAccess.get_files_at(d):
+				DirAccess.remove_absolute(d.path_join(f))
+	return dir
+
+
+func _pack_of(dir: String) -> String:
+	for f in DirAccess.get_files_at(dir):
+		if f.begins_with("chunks-") and f.ends_with(".pack"):
+			return dir.path_join(f)
+	return ""
+
+
+func _same_objects(a: Project, b: Project) -> bool:
+	if b == null or a.defs.size() != b.defs.size():
+		return false
+	for id in a.defs:
+		if not b.defs.has(id) or JSON.stringify(a.defs[id].to_dict()) != JSON.stringify(b.defs[id].to_dict()):
+			return false
+	return true
+
+
+func test_pack_dedupes_and_appends() -> void:
+	var p := Project.create_empty(0.01)
+	for i in 50:
+		var d := p.create_def("Crate %d" % i, 1)
+		d.grid.fill_box(Vector3i.ZERO, Vector3i(10, 10, 10), 3)
+		p.root().children.append(Demo._inst(p, d.id, Vector3i(i * 20, 0, 0), 0))
+	var dir := _fresh_dir("pack.ourcraft")
+	p.save_dir(dir)
+	var pack: Dictionary = ChunkPack.read(_pack_of(dir))
+	check(pack.size() == 1, "50 identical crates store one chunk (%d)" % pack.size())
+	var size_before := FileAccess.get_file_as_bytes(_pack_of(dir)).size()
+	p.edit_box(p.defs.keys()[1], Vector3i(0, 0, 0), Vector3i(1, 1, 1), 5)
+	p.save_dir(dir)
+	check(ChunkPack.read(_pack_of(dir)).size() == 2, "an edit appends one new chunk")
+	check(FileAccess.get_file_as_bytes(_pack_of(dir)).size() > size_before, "pack grew by appending")
+	check(_same_objects(p, Project.load_dir(dir)), "deduplicated pack loads back identical")
+	var lines := FileAccess.get_file_as_string(dir.path_join("objects.json")).split("\n", false)
+	check(lines.size() == p.defs.size() + 2, "objects.json has one line per object")
+
+
+func test_pack_survives_truncated_append() -> void:
+	var p := Demo.build(0.01)
+	var dir := _fresh_dir("trunc.ourcraft")
+	p.save_dir(dir)
+	var path := _pack_of(dir)
+	var f := FileAccess.open(path, FileAccess.READ_WRITE)
+	f.seek_end()
+	f.store_buffer(PackedByteArray([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 255, 255, 0, 0, 9]))
+	f.close()
+	check(_same_objects(p, Project.load_dir(dir)), "a torn append at the end of the pack is ignored")
+
+
+func test_pack_compacts_garbage() -> void:
+	var p := Project.create_empty(0.01)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 5
+	var ids := []
+	for i in 40:
+		var d := p.create_def("Noise %d" % i, 1)
+		for k in 400:
+			d.grid.set_cell(Vector3i(rng.randi_range(0, 31), rng.randi_range(0, 31), rng.randi_range(0, 31)), rng.randi_range(1, 9))
+		ids.append(d.id)
+	p.compact_min_garbage = 0
+	var dir := _fresh_dir("compact.ourcraft")
+	p.save_dir(dir)
+	var first := _pack_of(dir)
+	for i in 35:
+		p.delete_def(ids[i])
+	p.save_dir(dir)
+	var second := _pack_of(dir)
+	check(second != first and not FileAccess.file_exists(first), "mostly-garbage pack rewritten as a new pack")
+	check(ChunkPack.read(second).size() == 5, "compacted pack keeps only live chunks")
+	check(_same_objects(p, Project.load_dir(dir)), "compacted project loads back identical")
+
+
+## Version 1 folders (objects/<id>.json) load, and the next save converts them.
+func test_loads_and_converts_v1_folder() -> void:
+	var p := Demo.build(0.01)
+	var dir := _fresh_dir("v1.ourcraft")
+	DirAccess.make_dir_recursive_absolute(dir.path_join("objects"))
+	var m := p.manifest()
+	m.version = 1
+	m.erase("objects_file")
+	var ids := p.defs.keys()
+	ids.sort()
+	m.objects = ids
+	FileAccess.open(dir.path_join("manifest.json"), FileAccess.WRITE).store_string(JSON.stringify(m))
+	for id in ids:
+		FileAccess.open(dir.path_join("objects").path_join(id + ".json"), FileAccess.WRITE).store_string(JSON.stringify(p.defs[id].to_dict()))
+	var q := Project.load_dir(dir)
+	check(_same_objects(p, q), "version 1 folder loads")
+	q.save_dir(dir)
+	check(q.last_save_written == q.defs.size(), "saving a version 1 folder writes everything")
+	check(not DirAccess.dir_exists_absolute(dir.path_join("objects")), "conversion removes the old objects folder")
+	check(_same_objects(p, Project.load_dir(dir)), "converted folder loads identical")
+
+
+func test_loads_hand_formatted_objects_json() -> void:
+	var p := Demo.build(0.01)
+	var dir := _fresh_dir("pretty.ourcraft")
+	p.save_dir(dir)
+	var whole = JSON.parse_string(FileAccess.get_file_as_string(dir.path_join("objects.json")))
+	FileAccess.open(dir.path_join("objects.json"), FileAccess.WRITE).store_string(JSON.stringify(whole, "    "))
+	var q := Project.load_dir(dir)
+	check(_same_objects(p, q), "reformatted objects.json still loads")
+	q.save_dir(dir)
+	check(q.last_save_written == q.defs.size(), "objects from a reformatted file are rewritten")
 
 
 func test_bundle_export_import() -> void:

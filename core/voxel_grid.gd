@@ -63,7 +63,13 @@ func get_chunk(key: Vector3i):
 	var packed = _packed.get(key)
 	if packed == null:
 		return null
-	return (packed as PackedByteArray).decompress(VOLUME, CODEC)
+	var data := (packed as PackedByteArray).decompress(VOLUME, CODEC)
+	if data.size() != VOLUME:
+		# Loaded without checking (see set_packed_trusted) and it's corrupt.
+		push_error("Corrupt chunk %s; treating it as empty" % key)
+		_erase_chunk(key)
+		return null
+	return data
 
 
 ## The chunk's compressed bytes (shared; don't modify), or null.
@@ -173,6 +179,17 @@ func set_chunk(key: Vector3i, data) -> void:
 		_erase_chunk(key)
 		return
 	_store(key, data, count)
+
+
+## Stores compressed bytes and their solid count without decompressing them
+## (fast loading). Corrupt data is caught the first time the chunk is read.
+func set_packed_trusted(key: Vector3i, packed: PackedByteArray, count: int) -> void:
+	if count <= 0:
+		_erase_chunk(key)
+		return
+	_packed[key] = packed
+	counts[key] = count
+	_bounds.erase(key)
 
 
 ## Replaces a whole chunk with compressed bytes (from get_packed, undo or a
