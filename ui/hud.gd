@@ -38,6 +38,10 @@ var _swatches: Array = []
 var _lib_ids: Array = []
 var _suppress := false
 var _dialog_mode := ""
+var _outline_project: Project
+var _outline_edit := PackedStringArray()
+var _outline_selected = null
+var _outline_counts: Dictionary = {}
 
 
 func _ready() -> void:
@@ -226,6 +230,7 @@ func _build_panel(root: Control) -> void:
 	outline.hide_root = false
 	outline.item_selected.connect(_on_outline_selected)
 	outline.item_activated.connect(_on_outline_activated)
+	outline.item_collapsed.connect(_on_outline_item_collapsed)
 	col.add_child(outline)
 	col.add_child(_buttons([["Edit", "edit"], ["Leave", "leave"], ["Isolate", "isolate"]]))
 	col.add_child(_buttons([["Move", "grab"], ["Rotate", "rotate"], ["Unique", "unique"], ["Delete", "delete"]]))
@@ -389,37 +394,70 @@ func set_settings(min_block_cm: float, unit: int) -> void:
 
 func refresh_outline(project: Project, edit_path: PackedStringArray, selected) -> void:
 	_suppress = true
+	_outline_project = project
+	_outline_edit = edit_path
+	_outline_selected = selected
+	_outline_counts = project.usage_counts()
 	outline.clear()
-	var root_item := outline.create_item()
-	_fill_outline(project, root_item, project.root(), PackedStringArray(), edit_path, selected, 0)
+	_outline_row(outline.create_item(), project.root(), PackedStringArray(), 0)
+	var sel := outline.get_selected()
+	if sel != null:
+		outline.scroll_to_item(sel, true)
 	_suppress = false
 
 
-func _fill_outline(project: Project, item: TreeItem, def: ObjectDef, path: PackedStringArray,
-		edit_path: PackedStringArray, selected, depth: int) -> void:
+## Fills one outline row. Children are only created for rows that are open
+## (the edited or selected branch, or rows the user expands), so a project
+## with thousands of objects doesn't build thousands of rows up front.
+func _outline_row(item: TreeItem, def: ObjectDef, path: PackedStringArray, depth: int) -> void:
 	var text := def.name
-	var uses := project.usage_count(def.id)
+	var uses: int = _outline_counts.get(def.id, 0)
 	if uses > 1:
 		text += "  ×%d" % uses
-	if path == edit_path:
+	if path == _outline_edit:
 		text = "✎ " + text
 		item.set_custom_color(0, Color("#7fd3ff"))
 	item.set_text(0, text)
 	item.set_metadata(0, path)
-	if selected != null and path == selected:
+	if _outline_selected != null and path == _outline_selected:
 		item.select(0)
-	var on_edit_branch := _is_prefix(path, edit_path) or _is_prefix(edit_path, path)
-	var on_sel_branch := selected != null and _is_prefix(path, selected)
-	item.collapsed = depth > 0 and not on_edit_branch and not on_sel_branch
-	if depth >= Project.MAX_DEPTH:
+	if def.children.is_empty() or depth >= Project.MAX_DEPTH:
 		return
+	var open := depth == 0 or _is_prefix(path, _outline_edit) \
+			or (_outline_selected != null and _is_prefix(path, _outline_selected))
+	if open:
+		_outline_children(item, def, path, depth)
+	else:
+		# Placeholder so the row shows an expand arrow.
+		outline.create_item(item).set_text(0, "…")
+		item.collapsed = true
+
+
+func _outline_children(item: TreeItem, def: ObjectDef, path: PackedStringArray, depth: int) -> void:
 	for inst in def.children:
-		var child_def: ObjectDef = project.defs.get(inst.def_id)
+		var child_def: ObjectDef = _outline_project.defs.get(inst.def_id)
 		if child_def == null:
 			continue
 		var p := path.duplicate()
 		p.append(inst.id)
-		_fill_outline(project, outline.create_item(item), child_def, p, edit_path, selected, depth + 1)
+		_outline_row(outline.create_item(item), child_def, p, depth + 1)
+
+
+## Expanding a row replaces its placeholder with the real children.
+func _on_outline_item_collapsed(item: TreeItem) -> void:
+	if item.collapsed or _outline_project == null:
+		return
+	var first := item.get_first_child()
+	if first == null or first.get_metadata(0) != null:
+		return
+	first.free()
+	var path: PackedStringArray = item.get_metadata(0)
+	var def := _outline_project.def_at(path)
+	if def != null:
+		var was := _suppress
+		_suppress = true
+		_outline_children(item, def, path, path.size())
+		_suppress = was
 
 
 static func _is_prefix(a: PackedStringArray, b: PackedStringArray) -> bool:
@@ -435,13 +473,13 @@ func _on_outline_selected() -> void:
 	if _suppress:
 		return
 	var item := outline.get_selected()
-	if item != null:
+	if item != null and item.get_metadata(0) != null:
 		outline_selected.emit(item.get_metadata(0))
 
 
 func _on_outline_activated() -> void:
 	var item := outline.get_selected()
-	if item != null:
+	if item != null and item.get_metadata(0) != null:
 		outline_activated.emit(item.get_metadata(0))
 
 
@@ -453,10 +491,11 @@ func refresh_library(project: Project) -> void:
 	_lib_ids.clear()
 	var defs := project.defs.values()
 	defs.sort_custom(func(a, b): return a.name.naturalnocasecmp_to(b.name) < 0)
+	var counts := project.usage_counts()
 	for def in defs:
 		var cm: float = project.voxel_size * def.unit * 100.0
 		var label := "%s   ·  %s cm blocks" % [def.name, _fmt(cm)]
-		var uses := project.usage_count(def.id)
+		var uses: int = counts.get(def.id, 0)
 		if def.id == project.root_id:
 			label += "  ·  world"
 		elif uses == 0:
