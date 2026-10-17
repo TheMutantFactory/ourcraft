@@ -85,25 +85,30 @@ static func write_flat(grid: VoxelGrid, text: String, color: int) -> void:
 
 ## Writes text into a grid: letters in the XY plane starting at the origin,
 ## depth cells thick along +Z.
-static func write(grid: VoxelGrid, text: String, color: int, depth := 2) -> void:
+## letter_colors, if given, has one palette value per letter (overriding
+## color), e.g. from PaletteRamps.letter_colours.
+static func write(grid: VoxelGrid, text: String, color: int, depth := 2, letter_colors := PackedByteArray()) -> void:
 	_write_cells(grid, text, color, func(x: int, y: int) -> Array:
 		var cells := []
 		for z in depth:
 			cells.append(Vector3i(x, y, z))
-		return cells)
+		return cells, letter_colors)
 
 
 ## Builds raw chunks first (one compression per chunk instead of one per
 ## pixel); cells_of(x, y) maps a font pixel to the cells it fills.
-static func _write_cells(grid: VoxelGrid, text: String, color: int, cells_of: Callable) -> void:
+static func _write_cells(grid: VoxelGrid, text: String, color: int, cells_of: Callable,
+		letter_colors := PackedByteArray()) -> void:
 	var raw := {}
 	each_pixel(text, func(x: int, y: int) -> void:
+		var letter := x / (WIDTH + SPACING)
+		var c := letter_colors[letter] if letter < letter_colors.size() else color
 		for p in cells_of.call(x, y):
 			var key := VoxelGrid.chunk_of(p)
 			var data: PackedByteArray = raw.get(key, PackedByteArray())
 			if data.is_empty():
 				data.resize(VoxelGrid.VOLUME)
 				raw[key] = data
-			data[VoxelGrid.index(p.x & VoxelGrid.MASK, p.y & VoxelGrid.MASK, p.z & VoxelGrid.MASK)] = color)
+			data[VoxelGrid.index(p.x & VoxelGrid.MASK, p.y & VoxelGrid.MASK, p.z & VoxelGrid.MASK)] = c)
 	for key in raw:
 		grid.set_chunk(key, raw[key])

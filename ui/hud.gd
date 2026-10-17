@@ -149,7 +149,7 @@ Scroll brush size · T surface / grid placing
 , . shrink / grow yourself
 Q select · Q again walk up · Shift+Q walk down
 Enter edit · Backspace leave · I isolate · L lines
-N new object · G move · R rotate · Del delete
+N new object · G move · R rotate · Del delete · B burst
 Ctrl+C copy · Ctrl+V paste · Ctrl+D duplicate
 U make unique · Ctrl+Z undo · Ctrl+Shift+Z redo
 Ctrl+S save · Ctrl+O reload · Ctrl+ +/− text size
@@ -335,7 +335,10 @@ func toast(msg: String, seconds := 3.0) -> void:
 	toast_label.modulate.a = 1.0
 
 
-func set_palette(colors: Array, current: int) -> void:
+func set_palette(all_colors: Array, current: int) -> void:
+	# The hotbar holds the ten colours on keys 1-0; extra palette entries
+	# (gradient ramps) are for generated content.
+	var colors := all_colors.slice(0, 10)
 	if _swatches.size() != colors.size():
 		for c in hotbar.get_children():
 			c.free()

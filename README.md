@@ -66,9 +66,10 @@ tools/run.sh --project=user://projects/wordnet.ourcraft
 ```
 
 Sources are listed in [docs/bibliography.md](docs/bibliography.md). For the
-synthetic tree world, the tree fuzzer and the hole scenario (`tools/hole.sh`:
-clouds drop word trees into a hole that destroys what touches it), see
-[docs/testing.md](docs/testing.md).
+synthetic tree world, the tree fuzzer, the hole scenario (`tools/hole.sh`:
+clouds drop word trees into a hole that destroys what touches it) and the
+burst scenario (`tools/burst.sh`: gradient words burst into flying cubes),
+see [docs/testing.md](docs/testing.md).
 
 ## Concepts
 
@@ -101,6 +102,7 @@ clouds drop word trees into a hole that destroys what touches it), see
 | Enter / Backspace | Edit the selected object / leave the current object |
 | I | Isolate the object being edited |
 | L | Show the object tree as relationship lines |
+| B | Burst the selected object (or the one under the crosshair) into cubes |
 | N | New object at the crosshair (block size = current brush) |
 | G, R, Del | Move, rotate 90°, delete the selected instance |
 | Ctrl+C / Ctrl+V / Ctrl+D | Copy, paste an instance, duplicate |
