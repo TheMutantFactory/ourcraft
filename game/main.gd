@@ -108,6 +108,11 @@ func _run_debug_args() -> void:
 			_run_command("edit")
 		if args.has("isolate"):
 			_run_command("isolate")
+		if args.has("grabtest"):
+			_run_command("grab")
+			for i in 30:
+				player.look(Vector2(-6, 0))
+				await get_tree().physics_frame
 		if args.has("help"):
 			hud.toggle_help()
 		if args.has("panel"):

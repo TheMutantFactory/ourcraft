@@ -122,6 +122,11 @@ func bodies_of(inst_id: String) -> Array:
 	return out
 
 
+## Indices of the placements at or below an instance.
+func placements_under(inst_id: String) -> Array:
+	return _by_inst.get(inst_id, [])
+
+
 ## Moves the bodies of placements below an instance (used while dragging).
 func refresh_instance(inst_id: String, new_xform_of: Callable) -> void:
 	var touched := {}
