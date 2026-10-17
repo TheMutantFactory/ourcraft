@@ -60,6 +60,8 @@ Table › Fork). Press **Ctrl+S** to save it to
 - An **instance** places an object inside another one. Copies share the
   same object, so editing one updates them all. **Make unique** (U) forks the
   copy into its own object.
+- Where faces of nested objects line up in the same plane, the **deeper object
+  wins**, so a child reads as a layer on top of its parent.
 - You always **edit** one object at a time. Blocks you place and break go
   into it. Enter an object to edit it in context; press I to isolate it.
 

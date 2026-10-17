@@ -10,7 +10,7 @@ const UPLOAD_BUDGET_USEC := 4000
 const INLINE_BUDGET_USEC := 8000
 
 var project: Project
-var material: StandardMaterial3D
+var material: ShaderMaterial
 
 ## def_id -> {Vector3i key -> {"mesh": ArrayMesh, "shape": ConcavePolygonShape3D}}
 var _meshes: Dictionary = {}
@@ -36,10 +36,8 @@ var _tree_dirty := false
 
 func _ready() -> void:
 	Native.kernels() # initialise on the main thread before workers use it
-	material = StandardMaterial3D.new()
-	material.vertex_color_use_as_albedo = true
-	material.vertex_color_is_srgb = true
-	material.roughness = 0.88
+	material = ShaderMaterial.new()
+	material.shader = load("res://render/voxel.gdshader")
 
 
 func set_project(p: Project) -> void:
@@ -217,6 +215,8 @@ func _add_chunk_node(container: Node3D, key: Vector3i, entry: Dictionary) -> voi
 	var mi := MeshInstance3D.new()
 	mi.name = _key_name(key)
 	mi.mesh = entry.mesh
+	# Deeper objects win where faces are coplanar (see voxel.gdshader).
+	mi.set_instance_shader_parameter("layer", float(container.get_meta("path").size()))
 	var body := StaticBody3D.new()
 	body.set_meta("path", container.get_meta("path"))
 	body.set_meta("def_id", container.get_meta("def_id"))

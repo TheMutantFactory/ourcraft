@@ -70,6 +70,21 @@ func _run_debug_args() -> void:
 		return
 	if args.has("demo"):
 		_use_project(Demo.build(Settings.min_block_m()))
+	if args.has("coplanar"):
+		# Three nested objects whose top faces share one plane.
+		var p := Project.create_empty(0.01)
+		var a := p.create_def("Red", 1)
+		a.grid.fill_box(Vector3i(0, 0, 0), Vector3i(200, 1, 200), 5)
+		var b := p.create_def("Blue", 1)
+		b.grid.fill_box(Vector3i(0, 0, 0), Vector3i(120, 1, 120), 7)
+		var c := p.create_def("Green", 1)
+		c.grid.fill_box(Vector3i(0, 0, 0), Vector3i(50, 1, 50), 6)
+		p.root().grid.fill_box(Vector3i(-100, 0, -100), Vector3i(100, 1, 100), 5)
+		b.children.append(Demo._inst(p, c.id, Vector3i(35, 0, 35), 0))
+		p.root().children.append(Demo._inst(p, b.id, Vector3i(-60, 0, -60), 0))
+		_use_project(p)
+	if args.has("nobias"):
+		view.material.set_shader_parameter("bias_per_layer", 0.0)
 	if args.has("pose"):
 		var v := str(args.pose).split_floats(",")
 		player.global_position = Vector3(v[0], v[1], v[2])
@@ -95,6 +110,8 @@ func _run_debug_args() -> void:
 			hud.toggle_help()
 		if args.has("panel"):
 			_toggle_panel(true)
+		if args.has("grid"):
+			on_surface = false
 		if args.has("brush"):
 			brush_idx = maxi(0, BRUSHES.find(int(args.brush)))
 		if args.has("place"):
