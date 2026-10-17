@@ -60,6 +60,8 @@ Table › Fork). Press **Ctrl+S** to save it to
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 | Ctrl+S / Ctrl+O | Save / reload |
 | Tab | Panel: outline tree, object library (rename, place, export, import, delete), settings |
+| H | Show/hide the controls overlay |
+| Ctrl+= / Ctrl+- / Ctrl+0 | Text size up / down / reset (default is 2× the screen's scale, so 4× on Retina) |
 
 ## Layout
 

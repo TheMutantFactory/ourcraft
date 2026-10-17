@@ -31,6 +31,7 @@ var _outline_dirty := true
 
 
 func _ready() -> void:
+	_setup_window()
 	_setup_input()
 	_setup_environment()
 	view = WorldView.new()
@@ -49,7 +50,7 @@ func _ready() -> void:
 		hud.toast("Loaded %s" % loaded.title)
 	else:
 		_use_project(Demo.build(Settings.min_block_m()))
-		hud.toast("Welcome to Ourcraft. Press Q on the fork on a table to see the object tree.", 8.0)
+		hud.toast("Welcome! H shows the controls.", 8.0)
 	_reset_player()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_run_debug_args()
@@ -87,6 +88,8 @@ func _run_debug_args() -> void:
 			_run_command("edit")
 		if args.has("isolate"):
 			_run_command("isolate")
+		if args.has("help"):
+			hud.toggle_help()
 		if args.has("panel"):
 			_toggle_panel(true)
 		if args.has("place"):
@@ -97,6 +100,24 @@ func _run_debug_args() -> void:
 		print("fps=%d chunks_pending=%d" % [Engine.get_frames_per_second(), view.pending_chunks()])
 		get_viewport().get_texture().get_image().save_png(str(args.shot))
 		get_tree().quit()
+
+
+## Sizes the window to most of the screen and applies the interface scale.
+func _setup_window() -> void:
+	var win := get_window()
+	if DisplayServer.get_name() != "headless" and win.mode == Window.MODE_WINDOWED:
+		var usable := DisplayServer.screen_get_usable_rect(win.current_screen)
+		win.size = Vector2i(Vector2(usable.size) * 0.9)
+		win.position = usable.position + (usable.size - win.size) / 2
+	win.content_scale_factor = Settings.ui_scale()
+
+
+func set_ui_scale(value: float) -> void:
+	value = clampf(snappedf(value, 0.25), 1.0, 8.0)
+	get_window().content_scale_factor = value
+	Settings.set_ui_scale(value)
+	hud.set_ui_scale_value(value)
+	hud.toast("Text size %s×" % Hud._fmt(value))
 
 
 func _setup_input() -> void:
@@ -196,6 +217,8 @@ func _connect_hud() -> void:
 		Settings.set_min_block_m(project.voxel_size)
 		view.remesh_all()
 		_refresh_hud_static())
+	hud.ui_scale_changed.connect(set_ui_scale)
+	hud.set_ui_scale_value(get_window().content_scale_factor)
 	hud.object_unit_changed.connect(func(u):
 		project.set_def_unit(_edit_def().id, u)
 		_refresh_hud_static())
@@ -354,10 +377,10 @@ func _refresh_hud_dynamic() -> void:
 		ctx += "   [isolated]"
 	hud.context_label.text = ctx
 	if not _grab.is_empty():
-		hud.selection_label.text = "Moving %s — click to drop, R rotate, Esc cancel" % project.def_at(_grab.path).name
+		hud.selection_label.text = "Moving %s · click drop · R rotate · Esc cancel" % project.def_at(_grab.path).name
 	elif selected != null and project.is_valid_path(selected):
 		var depth: int = selected.size() - edit_path.size()
-		hud.selection_label.text = "Selected  %s%s   (Q up · Enter edit · G move · R rotate · Ctrl+C copy · U unique · Del)" % [
+		hud.selection_label.text = "Selected  %s%s  ·  Q up · Enter edit" % [
 			project.def_at(selected).name, "  ↑%d" % (depth - 1) if depth > 1 else ""]
 	else:
 		hud.selection_label.text = ""
@@ -365,11 +388,11 @@ func _refresh_hud_dynamic() -> void:
 	var got := _brush_cells(def) * def.unit
 	var txt := "Brush %s" % _cm(got)
 	if got != want:
-		txt += "  (%s requested; this object's blocks are %s — press N for a finer object)" % [_cm(want), _cm(def.unit)]
+		txt += " (object grid; N for finer)"
 	txt += "   ·   You: %sx%s" % [Hud._fmt(player.size), "   ·   flying" if player.flying else ""]
 	hud.brush_label.text = txt
 	var pending := view.pending_chunks()
-	hud.status_label.text = ("Meshing %d chunks…" % pending) if pending > 0 else "%d fps" % Engine.get_frames_per_second()
+	hud.status_label.text = ("Meshing %d chunks…" % pending) if pending > 0 else "%d fps\nH: controls" % Engine.get_frames_per_second()
 
 
 # --- Input -----------------------------------------------------------------
@@ -422,6 +445,9 @@ func _on_key(event: InputEventKey) -> void:
 			KEY_D: _run_command("duplicate")
 			KEY_S: _run_command("save")
 			KEY_O: _run_command("load")
+			KEY_EQUAL, KEY_PLUS, KEY_KP_ADD: set_ui_scale(get_window().content_scale_factor + 0.5)
+			KEY_MINUS, KEY_KP_SUBTRACT: set_ui_scale(get_window().content_scale_factor - 0.5)
+			KEY_0: set_ui_scale(2.0 * DisplayServer.screen_get_scale())
 		return
 	if k >= KEY_0 and k <= KEY_9:
 		var n := 10 if k == KEY_0 else k - KEY_0

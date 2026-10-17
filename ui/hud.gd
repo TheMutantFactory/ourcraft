@@ -13,6 +13,7 @@ signal export_object(def_id: String, file_path: String)
 signal import_object(file_path: String)
 signal min_block_changed(cm: float)
 signal object_unit_changed(unit: int)
+signal ui_scale_changed(value: float)
 
 const UNITS := [1, 2, 5, 10, 25, 50, 100]
 
@@ -20,7 +21,7 @@ var context_label: Label
 var selection_label: Label
 var brush_label: Label
 var toast_label: Label
-var help_label: Label
+var help_panel: PanelContainer
 var status_label: Label
 var hotbar: HBoxContainer
 var panel: PanelContainer
@@ -29,6 +30,7 @@ var library: ItemList
 var name_edit: LineEdit
 var min_block_spin: SpinBox
 var unit_option: OptionButton
+var ui_scale_spin: SpinBox
 var file_dialog: FileDialog
 
 var _toast_time := 0.0
@@ -58,37 +60,63 @@ func _ready() -> void:
 	root.add_child(cross)
 
 	var top := VBoxContainer.new()
-	top.position = Vector2(16, 14)
+	top.anchor_right = 1.0
+	top.offset_left = 16
+	top.offset_top = 14
+	top.offset_right = -140
+	top.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(top)
 	context_label = _shadow_label(20)
 	top.add_child(context_label)
 	selection_label = _shadow_label(16)
+	selection_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	selection_label.add_theme_color_override("font_color", Color("#ffd75e"))
 	top.add_child(selection_label)
 
 	status_label = _shadow_label(13)
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	root.add_child(status_label)
-	_pin_top_right(status_label, 14, 400)
+	_pin_top_right(status_label, 14, 120)
 
-	help_label = _shadow_label(14)
-	help_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	help_label.text = HELP
-	root.add_child(help_label)
-	_pin_top_right(help_label, 40, 600)
+	help_panel = PanelContainer.new()
+	help_panel.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	help_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	help_panel.offset_top = 64
+	help_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	help_panel.visible = false
+	root.add_child(help_panel)
+	var cols := HBoxContainer.new()
+	cols.add_theme_constant_override("separation", 24)
+	help_panel.add_child(cols)
+	var lines := HELP.split("\n")
+	var half := ceili(lines.size() / 2.0)
+	for part in [lines.slice(0, half), lines.slice(half)]:
+		var l := Label.new()
+		l.text = "\n".join(part)
+		l.add_theme_font_size_override("font_size", 13)
+		cols.add_child(l)
 
 	var bottom := VBoxContainer.new()
-	bottom.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	bottom.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	bottom.anchor_left = 0.0
+	bottom.anchor_right = 1.0
+	bottom.anchor_top = 1.0
+	bottom.anchor_bottom = 1.0
+	bottom.offset_left = 16
+	bottom.offset_right = -16
+	bottom.offset_bottom = -12
 	bottom.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	bottom.position.y -= 18
+	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bottom.alignment = BoxContainer.ALIGNMENT_END
 	root.add_child(bottom)
 	toast_label = _shadow_label(18)
 	toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	toast_label.clip_text = true
 	bottom.add_child(toast_label)
 	brush_label = _shadow_label(15)
 	brush_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	brush_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	brush_label.clip_text = true
 	bottom.add_child(brush_label)
 	var bar := PanelContainer.new()
 	bar.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -107,15 +135,18 @@ func _ready() -> void:
 	add_child(file_dialog)
 
 
-const HELP := """WASD move · Space jump · Shift sprint · F fly (Space/Shift up/down)
-Left click break · Right click place · Middle click pick colour
-1–0 colour · Scroll brush size · , . shrink/grow yourself
-Q select object (again: walk up the tree) · Shift+Q walk down
-Enter edit selected · Backspace leave object · I isolate
-N new object here · G move · R rotate · Del delete
-Ctrl+C copy · Ctrl+V paste instance · Ctrl+D duplicate · U make unique
-Ctrl+Z undo · Ctrl+Shift+Z redo · Ctrl+S save · Ctrl+O reload
-Tab panel (outline, library, settings) · H hide help"""
+const HELP := """WASD move · Space jump · Shift sprint
+F fly (Space / Shift up and down)
+Left click break · Right click place
+Middle click pick colour · 1–0 colour
+Scroll brush size · , . shrink / grow yourself
+Q select · Q again walk up · Shift+Q walk down
+Enter edit · Backspace leave · I isolate
+N new object · G move · R rotate · Del delete
+Ctrl+C copy · Ctrl+V paste · Ctrl+D duplicate
+U make unique · Ctrl+Z undo · Ctrl+Shift+Z redo
+Ctrl+S save · Ctrl+O reload · Ctrl+ +/− text size
+Tab panel · H close this"""
 
 
 func _pin_top_right(c: Control, top: float, width: float) -> void:
@@ -178,14 +209,19 @@ func _build_panel(root: Control) -> void:
 	panel.offset_bottom = -110
 	panel.visible = false
 	root.add_child(panel)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 8)
-	panel.add_child(col)
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(col)
 
 	col.add_child(_heading("Outline"))
 	outline = Tree.new()
 	outline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	outline.size_flags_stretch_ratio = 1.6
+	outline.custom_minimum_size.y = 220
 	outline.hide_root = false
 	outline.item_selected.connect(_on_outline_selected)
 	outline.item_activated.connect(_on_outline_activated)
@@ -196,6 +232,7 @@ func _build_panel(root: Control) -> void:
 	col.add_child(_heading("Library"))
 	library = ItemList.new()
 	library.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	library.custom_minimum_size.y = 160
 	library.item_selected.connect(_on_library_selected)
 	library.item_activated.connect(func(i): place_object.emit(_lib_ids[i]))
 	col.add_child(library)
@@ -243,6 +280,17 @@ func _build_panel(root: Control) -> void:
 	unit_option.item_selected.connect(func(i):
 		if not _suppress: object_unit_changed.emit(unit_option.get_item_id(i)))
 	grid.add_child(unit_option)
+	var l3 := Label.new()
+	l3.text = "Text size"
+	grid.add_child(l3)
+	ui_scale_spin = SpinBox.new()
+	ui_scale_spin.min_value = 1.0
+	ui_scale_spin.max_value = 8.0
+	ui_scale_spin.step = 0.25
+	ui_scale_spin.suffix = "×"
+	ui_scale_spin.value_changed.connect(func(v):
+		if not _suppress: ui_scale_changed.emit(v))
+	grid.add_child(ui_scale_spin)
 	col.add_child(_buttons([["Save", "save"], ["Reload", "load"], ["New world", "new_world"], ["Demo", "demo"]]))
 
 
@@ -307,7 +355,8 @@ func set_palette(colors: Array, current: int) -> void:
 
 func show_panel(on: bool) -> void:
 	panel.visible = on
-	help_label.visible = help_label.visible and not on
+	if on:
+		help_panel.visible = false
 
 
 func panel_open() -> bool:
@@ -315,7 +364,13 @@ func panel_open() -> bool:
 
 
 func toggle_help() -> void:
-	help_label.visible = not help_label.visible
+	help_panel.visible = not help_panel.visible
+
+
+func set_ui_scale_value(value: float) -> void:
+	_suppress = true
+	ui_scale_spin.value = value
+	_suppress = false
 
 
 func set_settings(min_block_cm: float, unit: int) -> void:
