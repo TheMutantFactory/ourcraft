@@ -9,7 +9,8 @@
 namespace ourcraft {
 
 // Native versions of the hot voxel loops. Each method mirrors a GDScript
-// function (VoxelGrid._fill_rows and Mesher.build_gdscript) and returns the
+// function (VoxelGrid._fill_rows, Mesher.build_gdscript and
+// BurstEffect's slicing) and returns the
 // same data, so the GDScript versions stay as a fallback and a reference.
 // The methods keep no state; GDScript calls them on one shared instance
 // (see core/native.gd), from the main thread and from mesh workers.
@@ -30,6 +31,21 @@ public:
 	// {"arrays": Array(Mesh.ARRAY_MAX), "faces": PackedVector3Array}.
 	godot::Dictionary mesh_chunk(const godot::Array &input, const godot::Vector3i &key,
 			const godot::Array &palette, double cell_m);
+
+	// Splits the solid cells of a dense box (x fastest) into connected
+	// pieces grown from random seeds, like BurstEffect.slice_gdscript (same
+	// rules, different random numbers). Returns [PackedInt32Array labels
+	// (-1 for empty), int count].
+	// Copies the solid cells of 32^3 chunks (datas[i] at grid cell
+	// bases[i]) into a dense box (x fastest, dims cells from grid cell
+	// olo * c), c^3 cells to one in their most common colour, like the loop
+	// in BurstEffect.voxel_box. c must be a power of two up to 32. Returns
+	// the updated box.
+	godot::PackedByteArray gather_box(const godot::PackedByteArray &box, const godot::Vector3i &dims,
+			const godot::Vector3i &olo, int64_t c, const godot::Array &datas, const godot::Array &bases);
+
+	godot::Array slice_pieces(const godot::PackedByteArray &cells, const godot::Vector3i &dims,
+			int64_t seeds, int64_t max_pieces, int64_t rng_seed);
 };
 
 } // namespace ourcraft

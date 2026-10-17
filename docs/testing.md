@@ -8,7 +8,7 @@
 | `tools/wordnet-world.sh` | A real-vocabulary test world from WordNet's part-of relations. |
 | `tools/synthetic-world.sh` | A synthetic deep-and-wide tree of random words, flat on the ground. |
 | `tools/hole.sh` | The hole scenario: a watchable soak test of creating and deleting object trees. |
-| `tools/burst.sh` | The burst scenario: gradient words on platforms burst into flying cubes. |
+| `tools/burst.sh` | The burst scenario: gradient words on platforms burst into flying pieces. |
 
 ## Tree fuzzing
 
@@ -130,24 +130,42 @@ bursts and new words keep appearing. Platforms never burst. The words are
 instances inside their platform objects, so bursting removes nested objects
 from baked regions.
 
-A burst (`BurstEffect`) turns the object's blocks into coloured cubes that
-fly out, spin, fall, bounce on the ground and shrink away, simulated on the
-CPU into a single MultiMesh. Blocks are grouped into chunk³ cubes in their
-most common colour:
+A burst (`BurstEffect`) breaks the object (and everything in it) into
+irregular pieces of its real voxels that fly out, spin, fall, bounce and
+fade away:
 
-- chunk grows (2, 4, 8…) until there are at most 1,500 cubes;
-- chunk is at least big enough for 4 cm cubes, since 1 cm cubes are specks
-  from a few metres away.
+- **Slicing.** Each object's voxels are copied into a dense box and split
+  by random flood fill: about 0.8·√voxels seed voxels (5–60 per burst,
+  shared between nested objects by size) grow into their neighbours, the
+  next voxel to grow from picked at random, so borders are ragged. Pieces
+  are always connected; bits no seed reaches (a separate letter, a stray
+  block) become pieces of their own. At most 1,500 pieces per burst.
+- **Big objects** are grouped into chunk³ blocks (most common colour) until
+  there are at most 40,000 voxels to slice.
+- **Meshing.** Each piece is greedy-meshed by `Mesher` on its own, in its
+  own colours, and drawn as a RenderingServer instance (no nodes).
+- **Flight.** Pieces are rigid: they spin about their centre of mass, fall,
+  and bounce off the ground and off the voxels of objects within 8 m (looked
+  up directly in their grids, so it works where no physics bodies exist).
+  A piece is treated as a ball of half its smallest extent.
+- **Cost.** The gather into the box and the slicing are native kernels
+  (`VoxelKernels.gather_box`, `slice_pieces`; GDScript fallbacks in
+  `BurstEffect`). Collecting a word takes about 1 ms, a 64³ cube about
+  35 ms; a frame of 60 flying pieces about 0.2 ms.
 
-Slicing objects into irregular pieces is a later step. Cubes only bounce
-off the ground, not off other objects.
+Tests check that every solid voxel ends up in exactly one piece with its
+colour (for a word, a grouped 64³ cube and nested objects), that pieces are
+connected and repeatable for a seed, that both slicers and both gathers
+agree on the rules, that the piece budget holds, and that pieces dropped
+onto another object land on it.
 
 **B** bursts the selected object (or the one under the crosshair) in normal
 play too, where Ctrl+Z brings it back.
 
 The soak also bursts several words at once every 7 s and checks every burst
-made cubes and really removed its word. A 60 s soak (2026-10-17): 86 bursts,
-10,210 cubes, all checks passed, about 119 fps.
+made pieces and really removed its word. A 60 s soak (2026-10-17, uniform
+cubes): 86 bursts, 10,210 cubes, about 119 fps. With sliced pieces
+(2026-10-17): 86 bursts, 1,357 pieces, all checks passed, about 120 fps.
 
 Both scenarios share `game/scenario.gd` (soak timing, end-of-run checks,
 report, HUD lines).

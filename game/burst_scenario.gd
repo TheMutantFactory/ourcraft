@@ -2,8 +2,8 @@ class_name BurstScenario
 extends Scenario
 ## Platforms of different heights in a ring, each with a few words on top,
 ## each word's letters stepping along a colour gradient. Every second or
-## so a random word (never a platform) bursts into flying coloured cubes
-## (BurstEffect) and is removed; new words keep appearing.
+## so a random word (never a platform) breaks into flying pieces of its
+## voxels (BurstEffect) and is removed; new words keep appearing.
 ##
 ## The words are instances inside their platform objects, so bursting also
 ## exercises removing nested objects from baked regions.
@@ -33,7 +33,7 @@ var _poke_timer := 7.0
 func _init(seed := 1) -> void:
 	super(seed)
 	name = "Burst"
-	stats = {"bursts": 0, "cubes": 0, "words made": 0, "objects deleted": 0, "biggest chunk": 1}
+	stats = {"bursts": 0, "pieces": 0, "words made": 0, "objects deleted": 0, "biggest chunk": 1}
 	trees = WordTrees.new(seed, WordTrees.load_words())
 
 
@@ -64,8 +64,8 @@ func _setup() -> void:
 
 
 func status_lines() -> String:
-	return "bursts %d · cubes %d · words %d\nlibrary %d objects · effects %d" % [
-		stats.bursts, stats.cubes, _words.size(), project.defs.size(), _effects]
+	return "bursts %d · pieces %d · words %d\nlibrary %d objects · effects %d" % [
+		stats.bursts, stats.pieces, _words.size(), project.defs.size(), _effects]
 
 
 func report_line() -> String:
@@ -95,15 +95,15 @@ func _forget_missing() -> void:
 			_words.erase(id)
 
 
-## Bursts one word into cubes and removes it (and any object only it used).
+## Bursts one word into pieces and removes it (and any object only it used).
 func burst_word(id: String) -> void:
 	var w: Dictionary = _words[id]
 	_words.erase(id)
 	view.flush()
 	var path := PackedStringArray([w.platform_inst, id])
 	var parts := BurstEffect.collect(project, view, path)
-	if parts.points.is_empty():
-		poke_failures.append("bursting %s produced no cubes" % id)
+	if parts.pieces.is_empty():
+		poke_failures.append("bursting %s produced no pieces" % id)
 	else:
 		var fx := BurstEffect.new()
 		main.add_child(fx)
@@ -111,7 +111,7 @@ func burst_word(id: String) -> void:
 		_effects += 1
 		fx.tree_exited.connect(func(): _effects -= 1)
 	stats.bursts += 1
-	stats.cubes += parts.points.size()
+	stats.pieces += parts.pieces.size()
 	stats["biggest chunk"] = maxi(stats["biggest chunk"], parts.chunk)
 	stats["objects deleted"] += project.remove_and_prune(w.platform, id)
 	if project.defs[w.platform].find_child(id) != null:

@@ -46,6 +46,10 @@ func _run() -> void:
 	test_remove_and_prune()
 	test_gradient_words()
 	test_burst_collect()
+	test_burst_budget_and_nesting()
+	test_burst_slice()
+	test_burst_box_native()
+	test_burst_pieces_bounce_off_objects()
 	test_recording_off()
 	test_outline_drop_rules()
 	test_corner_depth_limit()
@@ -591,18 +595,188 @@ func test_burst_collect() -> void:
 	var p := Project.create_empty(0.01)
 	var word := p.create_def("word", 1)
 	BlockFont.write(word.grid, "AB", 3, 2)
+	word.grid.set_cell(Vector3i(0, 30, 0), 7) # a stray block no seed may reach
 	var big := p.create_def("big", 1)
 	big.grid.fill_box(Vector3i.ZERO, Vector3i(64, 64, 64), 4)
 	var iw := p.add_instance(p.root_id, word.id, Vector3i(100, 0, 0))
 	var ib := p.add_instance(p.root_id, big.id, Vector3i(0, 0, 300))
 	var view := _test_view(p)
-	var small := BurstEffect.collect(p, view, PackedStringArray([iw.id]), 1500, 0.01)
-	check(small.chunk == 1 and small.points.size() == word.grid.solid_count(), "small objects burst block by block")
-	var sized := BurstEffect.collect(p, view, PackedStringArray([iw.id]), 1500, 0.04)
-	check(sized.chunk == 4 and sized.points.size() < small.points.size(), "a minimum cube size groups blocks (chunk %d)" % sized.chunk)
-	var huge := BurstEffect.collect(p, view, PackedStringArray([ib.id]), 1500, 0.01)
-	check(huge.points.size() <= 1500 and huge.chunk == 8, "a big object is grouped to stay within budget (%d cubes, chunk %d)" % [huge.points.size(), huge.chunk])
-	check(huge.colors[0] == p.palette[3], "cubes take the object's colour")
+	var parts := BurstEffect.collect(p, view, PackedStringArray([iw.id]), 1500, true)
+	check(parts.chunk == 1 and parts.cells == word.grid.solid_count(), "small objects are sliced block by block")
+	check(parts.pieces.size() >= 5 and parts.pieces.size() <= 60, "a word breaks into 5-60 pieces (%d)" % parts.pieces.size())
+	# Every solid voxel is in exactly one piece, in its own colour.
+	var box := BurstEffect.voxel_box(word.grid)
+	var dims: Vector3i = box.dims
+	var seen := {}
+	var ok := true
+	var meshed := true
+	for piece in parts.pieces:
+		meshed = meshed and not piece.surfaces.is_empty()
+		for key: Vector3i in piece.voxels:
+			var data: PackedByteArray = piece.voxels[key]
+			for i in data.size():
+				if data[i] == 0:
+					continue
+				var c: Vector3i = (piece.lo as Vector3i) + key * VoxelGrid.SIZE + Vector3i(i & 31, (i >> 5) & 31, i >> 10)
+				var j := c.x + dims.x * (c.y + dims.y * c.z)
+				if seen.has(j) or box.cells[j] != data[i]:
+					ok = false
+				seen[j] = true
+	check(ok and seen.size() == word.grid.solid_count(), "every voxel lands in exactly one piece with its colour (%d of %d)" % [seen.size(), word.grid.solid_count()])
+	check(meshed, "every piece has a mesh")
+	var corner := Vector3(box.origin) * 0.01 + Vector3(1.0, 0, 0)
+	check(parts.pieces.all(func(pc): return pc.origin.origin.distance_to(corner) < 1.0), "pieces start where the object was")
+	var huge := BurstEffect.collect(p, view, PackedStringArray([ib.id]), 1500, true)
+	check(huge.chunk == 2 and huge.pieces.size() <= 60, "a big object is grouped before slicing (%d pieces, chunk %d)" % [huge.pieces.size(), huge.chunk])
+	var colours_ok := true
+	var total := 0
+	for piece in huge.pieces:
+		total += piece.cells
+		for key in piece.voxels:
+			var data: PackedByteArray = piece.voxels[key]
+			colours_ok = colours_ok and data.count(0) + data.count(4) == data.size()
+	check(colours_ok and total == 32 * 32 * 32, "grouped pieces keep the object's colour and cover it")
+	check(huge.obstacles.size() == 1 and huge.obstacles[0].grid == word.grid,
+		"the other object nearby is an obstacle, the burst object isn't (%d)" % huge.obstacles.size())
+	view.free()
+
+
+## A parent with many small children stays within the piece budget, and
+## nested objects with other block sizes are sliced too.
+func test_burst_budget_and_nesting() -> void:
+	var p := Project.create_empty(0.01)
+	var dot := p.create_def("dot", 2)
+	dot.grid.set_cell(Vector3i.ZERO, 3)
+	var holder := p.create_def("holder", 1)
+	holder.grid.fill_box(Vector3i.ZERO, Vector3i(10, 1, 10), 1)
+	for i in 30:
+		p.add_instance(holder.id, dot.id, Vector3i(i * 4, 2, 0))
+	var ih := p.add_instance(p.root_id, holder.id, Vector3i.ZERO)
+	var view := _test_view(p)
+	var all := BurstEffect.collect(p, view, PackedStringArray([ih.id]))
+	var cells := 0
+	for piece in all.pieces:
+		cells += piece.cells
+	check(cells == 100 + 30 and all.pieces.size() >= 31, "nested objects are sliced too (%d cells, %d pieces)" % [cells, all.pieces.size()])
+	var few := BurstEffect.collect(p, view, PackedStringArray([ih.id]), 10)
+	check(few.pieces.size() <= 10, "the piece budget holds (%d)" % few.pieces.size())
+	view.free()
+
+
+## Both slicers: every solid cell gets exactly one piece, pieces are
+## connected, unreached bits become pieces, and max_pieces holds.
+func test_burst_slice() -> void:
+	var dims := Vector3i(13, 9, 7)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 5
+	var cells := PackedByteArray()
+	cells.resize(dims.x * dims.y * dims.z)
+	for i in cells.size():
+		cells[i] = rng.randi_range(1, 20) if rng.randf() < 0.55 else 0
+	var modes := [false, true] if Native.available() else [false]
+	for use_native in modes:
+		Native.enabled = use_native
+		var label := "native" if use_native else "GDScript"
+		var cut := BurstEffect.slice(cells, dims, 8, 400, 42)
+		var labels: PackedInt32Array = cut.labels
+		var ok := labels.size() == cells.size()
+		var sizes := {}
+		for i in cells.size():
+			if (cells[i] == 0) != (labels[i] < 0) or labels[i] >= cut.count:
+				ok = false
+			if labels[i] >= 0:
+				sizes[labels[i]] = int(sizes.get(labels[i], 0)) + 1
+		check(ok and sizes.size() == cut.count, "%s slice labels every solid cell once (%d pieces)" % [label, cut.count])
+		check(cut.count > 8, "%s slice makes pieces of unreached bits" % label)
+		check(_pieces_connected(cells, dims, labels, cut.count), "%s slice pieces are connected" % label)
+		var capped := BurstEffect.slice(cells, dims, 8, 10, 42)
+		var all_in := true
+		for i in cells.size():
+			if (cells[i] != 0) != (capped.labels[i] >= 0) or capped.labels[i] >= 10:
+				all_in = false
+		check(capped.count == 10 and all_in, "%s slice keeps within max_pieces" % label)
+		var again := BurstEffect.slice(cells, dims, 8, 400, 42)
+		check(again.labels == labels, "%s slice is repeatable for a seed" % label)
+		var empty := PackedByteArray()
+		empty.resize(8)
+		check(BurstEffect.slice(empty, Vector3i(2, 2, 2), 5, 60, 1).count == 0, "%s slice of nothing makes no pieces" % label)
+	Native.enabled = true
+
+
+## The native gather into a slicing box matches the GDScript one (block by
+## block, and grouped where each group has one clear majority colour).
+func test_burst_box_native() -> void:
+	if not Native.available():
+		return
+	var g := VoxelGrid.new()
+	seed(3)
+	for i in 60:
+		var a := Vector3i(randi_range(-40, 40), randi_range(-40, 40), randi_range(-40, 40))
+		g.fill_box(a, a + Vector3i(randi_range(1, 9), randi_range(1, 9), randi_range(1, 9)), randi_range(1, 9))
+	var coarse := VoxelGrid.new()
+	for i in 40:
+		var a := Vector3i(randi_range(-12, 12), randi_range(-12, 12), randi_range(-12, 12)) * 4
+		coarse.fill_box(a, a + Vector3i.ONE * 4, randi_range(1, 9))
+		coarse.set_cell(a, 0)
+	for pair in [[g, 1], [coarse, 4]]:
+		Native.enabled = false
+		var slow := BurstEffect.voxel_box(pair[0], pair[1])
+		Native.enabled = true
+		var fast := BurstEffect.voxel_box(pair[0], pair[1])
+		check(fast.cells == slow.cells and fast.dims == slow.dims and fast.origin == slow.origin,
+			"native slicing box matches GDScript (chunk %d)" % pair[1])
+
+
+func _pieces_connected(cells: PackedByteArray, dims: Vector3i, labels: PackedInt32Array, count: int) -> bool:
+	var first := {}
+	for i in labels.size():
+		if labels[i] >= 0 and not first.has(labels[i]):
+			first[labels[i]] = i
+	var reached := 0
+	for k in first:
+		var seen := {first[k]: true}
+		var stack := [first[k]]
+		while not stack.is_empty():
+			var i: int = stack.pop_back()
+			var x := i % dims.x
+			var y := (i / dims.x) % dims.y
+			var z := i / (dims.x * dims.y)
+			for nb: Vector3i in [Vector3i(x - 1, y, z), Vector3i(x + 1, y, z), Vector3i(x, y - 1, z),
+					Vector3i(x, y + 1, z), Vector3i(x, y, z - 1), Vector3i(x, y, z + 1)]:
+				if nb.x < 0 or nb.y < 0 or nb.z < 0 or nb.x >= dims.x or nb.y >= dims.y or nb.z >= dims.z:
+					continue
+				var j := nb.x + dims.x * (nb.y + dims.y * nb.z)
+				if labels[j] == k and not seen.has(j):
+					seen[j] = true
+					stack.append(j)
+		reached += seen.size()
+	return reached == labels.size() - labels.count(-1) and first.size() == count
+
+
+## Pieces dropped onto another object land on it instead of falling
+## through to the ground.
+func test_burst_pieces_bounce_off_objects() -> void:
+	var p := Project.create_empty(0.01)
+	var slab := p.create_def("slab", 1)
+	slab.grid.fill_box(Vector3i.ZERO, Vector3i(100, 10, 100), 1)
+	var cube := p.create_def("cube", 1)
+	cube.grid.fill_box(Vector3i.ZERO, Vector3i(12, 12, 12), 2)
+	p.add_instance(p.root_id, slab.id, Vector3i(0, 50, 0))
+	var ic := p.add_instance(p.root_id, cube.id, Vector3i(44, 70, 44))
+	var view := _test_view(p)
+	var parts := BurstEffect.collect(p, view, PackedStringArray([ic.id]))
+	var fx := BurstEffect.new()
+	root.add_child(fx)
+	fx.setup(parts, 0.0)
+	check(fx.piece_count() == parts.pieces.size() and fx.piece_count() >= 5, "every piece is drawn")
+	check(fx._solid(Vector3(0.5, 0.55, 0.5)) and not fx._solid(Vector3(0.5, 0.65, 0.5)), "obstacle voxels are looked up")
+	for i in 90:
+		fx._process(1.0 / 60.0)
+	var lowest := INF
+	for pos in fx._pos:
+		lowest = minf(lowest, pos.y)
+	check(lowest > 0.6, "pieces rest on the object below them (lowest %.3f m)" % lowest)
+	fx.free()
 	view.free()
 
 
