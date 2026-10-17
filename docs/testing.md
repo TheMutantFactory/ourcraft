@@ -8,6 +8,7 @@
 | `tools/wordnet-world.sh` | A real-vocabulary test world from WordNet's part-of relations. |
 | `tools/synthetic-world.sh` | A synthetic deep-and-wide tree of random words, flat on the ground. |
 | `tools/hole.sh` | The hole scenario: a watchable soak test of creating and deleting object trees. |
+| `tools/burst.sh` | The burst scenario: gradient words on platforms burst into flying cubes. |
 
 ## Tree fuzzing
 
@@ -113,6 +114,43 @@ left that nothing uses (a leak).
 A 120 s soak (2026-10-17): 142 trees spawned, 94 destroyed, 577 objects
 deleted, 23 player drops, all checks passed, about 110 fps, RAM +28 MB
 (mostly trees that landed and stayed).
+
+## Burst scenario
+
+```bash
+tools/burst.sh               # watch it; B bursts the selected or aimed object
+tools/burst.sh --soak=60
+```
+
+Fourteen stone platforms of different heights stand in a ring. Each has a
+couple of words on top, facing the middle, with each letter a step along a
+colour gradient (`PaletteRamps`: 8 ramps × 8 steps appended to the palette;
+the hotbar still shows the first ten colours). Every 0.6–1.6 s a random word
+bursts and new words keep appearing. Platforms never burst. The words are
+instances inside their platform objects, so bursting removes nested objects
+from baked regions.
+
+A burst (`BurstEffect`) turns the object's blocks into coloured cubes that
+fly out, spin, fall, bounce on the ground and shrink away, simulated on the
+CPU into a single MultiMesh. Blocks are grouped into chunk³ cubes in their
+most common colour:
+
+- chunk grows (2, 4, 8…) until there are at most 1,500 cubes;
+- chunk is at least big enough for 4 cm cubes, since 1 cm cubes are specks
+  from a few metres away.
+
+Slicing objects into irregular pieces is a later step. Cubes only bounce
+off the ground, not off other objects.
+
+**B** bursts the selected object (or the one under the crosshair) in normal
+play too, where Ctrl+Z brings it back.
+
+The soak also bursts several words at once every 7 s and checks every burst
+made cubes and really removed its word. A 60 s soak (2026-10-17): 86 bursts,
+10,210 cubes, all checks passed, about 119 fps.
+
+Both scenarios share `game/scenario.gd` (soak timing, end-of-run checks,
+report, HUD lines).
 
 ## What these found (2026-10-17)
 

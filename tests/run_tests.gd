@@ -44,6 +44,8 @@ func _run() -> void:
 	test_corner_reparent()
 	test_reparent_keeps_world_position()
 	test_remove_and_prune()
+	test_gradient_words()
+	test_burst_collect()
 	test_recording_off()
 	test_outline_drop_rules()
 	test_corner_depth_limit()
@@ -570,6 +572,38 @@ func test_remove_and_prune() -> void:
 			if not p.defs.has(inst.def_id):
 				dangling = true
 	check(not dangling, "no dangling instances after pruning")
+
+
+func test_gradient_words() -> void:
+	var p := Project.create_empty(0.01)
+	var base := PaletteRamps.ensure(p)
+	check(p.palette.size() == 10 + PaletteRamps.RAMPS.size() * PaletteRamps.STEPS and PaletteRamps.ensure(p) == base,
+		"ramps are added to the palette once")
+	var cols := PaletteRamps.letter_colours(base, 2, 4)
+	check(cols.size() == 4 and cols[0] == base + 2 * PaletteRamps.STEPS and cols[3] == base + 3 * PaletteRamps.STEPS - 1,
+		"letters span a ramp from its first to its last step")
+	var g := VoxelGrid.new()
+	BlockFont.write(g, "IO", 1, 1, PackedByteArray([cols[0], cols[3]]))
+	check(g.get_cell(Vector3i(2, 6, 0)) == cols[0] and g.get_cell(Vector3i(7, 6, 0)) == cols[3], "each letter gets its own colour")
+
+
+func test_burst_collect() -> void:
+	var p := Project.create_empty(0.01)
+	var word := p.create_def("word", 1)
+	BlockFont.write(word.grid, "AB", 3, 2)
+	var big := p.create_def("big", 1)
+	big.grid.fill_box(Vector3i.ZERO, Vector3i(64, 64, 64), 4)
+	var iw := p.add_instance(p.root_id, word.id, Vector3i(100, 0, 0))
+	var ib := p.add_instance(p.root_id, big.id, Vector3i(0, 0, 300))
+	var view := _test_view(p)
+	var small := BurstEffect.collect(p, view, PackedStringArray([iw.id]), 1500, 0.01)
+	check(small.chunk == 1 and small.points.size() == word.grid.solid_count(), "small objects burst block by block")
+	var sized := BurstEffect.collect(p, view, PackedStringArray([iw.id]), 1500, 0.04)
+	check(sized.chunk == 4 and sized.points.size() < small.points.size(), "a minimum cube size groups blocks (chunk %d)" % sized.chunk)
+	var huge := BurstEffect.collect(p, view, PackedStringArray([ib.id]), 1500, 0.01)
+	check(huge.points.size() <= 1500 and huge.chunk == 8, "a big object is grouped to stay within budget (%d cubes, chunk %d)" % [huge.points.size(), huge.chunk])
+	check(huge.colors[0] == p.palette[3], "cubes take the object's colour")
+	view.free()
 
 
 func test_recording_off() -> void:

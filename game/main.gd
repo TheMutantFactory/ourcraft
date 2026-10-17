@@ -18,8 +18,8 @@ var player: Player
 var hud: Hud
 var overlay: Overlay
 var tree_lines: TreeLines
-## The running scenario (HoleScenario), if any.
-var scenario: HoleScenario
+## The running scenario (HoleScenario, BurstScenario), if any.
+var scenario: Scenario
 
 var edit_path := PackedStringArray()
 var selected = null # PackedStringArray or null
@@ -73,16 +73,26 @@ func _ready() -> void:
 		_use_project(Demo.build(Settings.min_block_m()))
 		hud.toast("Welcome! H shows the controls.", 8.0)
 	_reset_player()
-	if scenario_name == "hole":
-		scenario = HoleScenario.new()
+	match scenario_name:
+		"hole":
+			scenario = HoleScenario.new()
+		"burst":
+			scenario = BurstScenario.new()
+	if scenario != null:
 		add_child(scenario)
 		scenario.attach(self, project, view)
+		_refresh_hud_static()
 		for a in OS.get_cmdline_user_args():
 			if a.begins_with("--soak="):
 				scenario.soak = float(a.trim_prefix("--soak="))
-		player.global_position = Vector3(0, 0.2, HoleScenario.HOLE * 0.5 + 6.0)
-		player.set_pitch(deg_to_rad(20))
-		hud.toast("Hole scenario: clouds drop word trees into the hole. Undo is off.", 6.0)
+		if scenario is HoleScenario:
+			player.global_position = Vector3(0, 0.2, HoleScenario.HOLE * 0.5 + 6.0)
+			player.set_pitch(deg_to_rad(20))
+			hud.toast("Hole scenario: clouds drop word trees into the hole. Undo is off.", 6.0)
+		else:
+			player.global_position = Vector3(0, 0.2, 0)
+			player.set_pitch(deg_to_rad(8))
+			hud.toast("Burst scenario: words burst into cubes. B bursts the selected or aimed object.", 6.0)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_run_debug_args()
 
@@ -162,6 +172,22 @@ func _run_debug_args() -> void:
 			tree_lines.mark_dirty()
 		if args.has("help"):
 			hud.toggle_help()
+		if args.has("burst"):
+			# Debug: --burst=<name> bursts the first copy of an object;
+			# --burst=* frames the deepest object and bursts it.
+			var bp = null
+			if str(args.burst) == "*":
+				for pl in view._placements:
+					if bp == null or pl.path.size() > bp.size():
+						bp = pl.path
+				if bp != null:
+					_goto(project.def_at(bp).name, float(args.get("zoom", "1")))
+					for i in 30:
+						await get_tree().physics_frame
+			else:
+				bp = _find_path(project.root(), str(args.burst).replace("_", " "), PackedStringArray(), 0)
+			if bp != null:
+				_burst(bp)
 		if args.has("reparent"):
 			# Debug: --reparent=<object name>:<new parent name> moves the first
 			# copy of one object into the first copy of another.
@@ -491,9 +517,7 @@ func _refresh_hud_dynamic() -> void:
 	var pending := view.pending_chunks()
 	var status := ("Meshing %d chunks…" % pending) if pending > 0 else "%d fps\nH: controls" % Engine.get_frames_per_second()
 	if scenario != null:
-		var st: Dictionary = scenario.stats
-		status += "\nspawned %d · destroyed %d · landed %d\nfalling %d · library %d objects" % [
-			st.spawned, st.destroyed, st.landed, scenario.falling_count(), project.defs.size()]
+		status += "\n" + scenario.status_lines()
 	hud.status_label.text = status
 
 
@@ -588,6 +612,13 @@ func _on_key(event: InputEventKey) -> void:
 				_run_command("rotate")
 		KEY_DELETE, KEY_X: _run_command("delete")
 		KEY_U: _run_command("unique")
+		KEY_B:
+			if selected != null:
+				_burst(selected)
+			elif not _aim.is_empty() and _aim.path != null:
+				_burst(_aim.path)
+			else:
+				hud.toast("Aim at an object, or select one with Q, then press B to burst it")
 		KEY_L:
 			tree_lines.visible = not tree_lines.visible
 			tree_lines.mark_dirty()
@@ -766,6 +797,34 @@ func _new_object() -> void:
 	selected = null
 	_after_context_change()
 	hud.toast("Created %s with %s blocks — you're editing it now. Backspace when done." % [def.name, _cm(want)], 5.0)
+
+
+## Bursts the object at path into flying cubes and removes it. Undoable
+## in normal play; in a scenario (undo off) objects only it used are
+## deleted too.
+func _burst(path: PackedStringArray) -> void:
+	if path.is_empty():
+		hud.toast("The world itself can't burst")
+		return
+	var inst := project.instance_at(path)
+	if inst == null:
+		return
+	var nm: String = project.defs[inst.def_id].name
+	view.flush()
+	var parts := BurstEffect.collect(project, view, path)
+	if not parts.points.is_empty():
+		var fx := BurstEffect.new()
+		add_child(fx)
+		fx.setup(parts, 3.5)
+	var parent := project.def_at(path.slice(0, path.size() - 1))
+	if project.recording:
+		project.remove_instance(parent.id, inst.id)
+	else:
+		project.remove_and_prune(parent.id, inst.id)
+	selected = null
+	var chunk_note := "" if parts.chunk == 1 else " of %d³ blocks" % parts.chunk
+	hud.toast("Burst %s into %d cubes%s%s" % [nm, parts.points.size(), chunk_note,
+		" (Ctrl+Z to undo)" if project.recording else ""], 3.0)
 
 
 ## Moves the instance at path into the object at to_path, keeping it in

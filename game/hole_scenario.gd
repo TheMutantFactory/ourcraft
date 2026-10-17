@@ -1,5 +1,5 @@
 class_name HoleScenario
-extends Node
+extends Scenario
 ## A soak test you can watch: a square hole in the middle of the map
 ## destroys anything that touches it, and clouds circling above it drop
 ## freshly made word trees that fall in. It keeps creating, moving and
@@ -22,12 +22,7 @@ const SINK := 0.4
 ## Sideways drift of new trees (metres per second).
 const DRIFT := 0.6
 
-var main: Node
-var project: Project
-var view: WorldView
-var rng := RandomNumberGenerator.new()
 var trees: WordTrees
-var stats := {"spawned": 0, "destroyed": 0, "landed": 0, "objects deleted": 0, "player falls": 0}
 
 ## inst id -> {angle, timer}
 var _clouds := {}
@@ -35,28 +30,20 @@ var _clouds := {}
 var _falling := {}
 var _scan_timer := 0.0
 var _cloud_def := ""
-## Soak mode: run this many seconds, check invariants, report and quit.
-var soak := 0.0
-var _elapsed := 0.0
-var _start_ram := 0
 ## Soak pokes: things the soak did that the hole must react to, with a
 ## deadline. {kind, id, deadline}
 var _pokes: Array = []
 var _poke_timer := 5.0
-var _poke_failures := PackedStringArray()
 
 
 func _init(seed := 1) -> void:
-	rng.seed = seed
+	super(seed)
+	name = "Hole"
+	stats = {"spawned": 0, "destroyed": 0, "landed": 0, "objects deleted": 0, "player falls": 0}
 	trees = WordTrees.new(seed, WordTrees.load_words())
 
 
-## Starts on a project (also called when the game switches projects).
-func attach(main_node: Node, p: Project, v: WorldView) -> void:
-	main = main_node
-	project = p
-	view = v
-	project.set_recording(false)
+func _setup() -> void:
 	_clouds.clear()
 	_falling.clear()
 	var cloud := _make_cloud()
@@ -70,18 +57,16 @@ func falling_count() -> int:
 	return _falling.size()
 
 
-func _physics_process(dt: float) -> void:
-	if project == null:
-		return
-	_elapsed += dt
-	if _start_ram == 0:
-		_start_ram = OS.get_static_memory_usage()
-	if soak > 0.0 and _elapsed >= soak:
-		_finish_soak()
-		soak = 0.0
-		return
-	if soak > 0.0:
-		_poke(dt)
+func status_lines() -> String:
+	return "spawned %d · destroyed %d · landed %d\nfalling %d · library %d objects" % [
+		stats.spawned, stats.destroyed, stats.landed, _falling.size(), project.defs.size()]
+
+
+func report_line() -> String:
+	return "falling %d" % _falling.size()
+
+
+func _tick(dt: float) -> void:
 	var s := 1.0 / project.voxel_size # metres -> smallest blocks
 	var root := project.root()
 	# Clouds circle the hole and drop trees.
@@ -146,7 +131,7 @@ func _poke(dt: float) -> void:
 		if done:
 			_pokes.erase(p)
 		elif _elapsed > p.deadline:
-			_poke_failures.append("%s wasn't handled by the hole within 4 s (at %.0f s)" % [p.kind, _elapsed])
+			poke_failures.append("%s wasn't handled by the hole within 4 s (at %.0f s)" % [p.kind, _elapsed])
 			_pokes.erase(p)
 	_poke_timer -= dt
 	if _poke_timer > 0.0:
@@ -164,31 +149,6 @@ func _poke(dt: float) -> void:
 	_pokes.append({"kind": "block", "cell": cell, "deadline": _elapsed + 4.0})
 	main.player.global_position = Vector3(0, -2.0, 0)
 	_pokes.append({"kind": "player", "deadline": _elapsed + 4.0})
-
-
-## Checks the project and the view after a soak run, prints a report and
-## quits (exit code 1 if a check failed).
-func _finish_soak() -> void:
-	view.flush()
-	var f := TreeFuzz.new(1, project)
-	f.view = view
-	f._check_invariants()
-	f.check_view()
-	var reachable := project.dependencies(project.root_id)
-	var orphans := project.defs.size() - reachable.size()
-	if orphans > 0:
-		f.fail("%d objects are no longer used anywhere (a leak)" % orphans)
-	for msg in _poke_failures:
-		f.fail(msg)
-	print("Hole soak: %.0f s, %s" % [_elapsed, stats])
-	print("  library %d objects, %d placements, falling %d, RAM %+d MB since start, %d fps" % [
-		project.defs.size(), view._placements.size(), _falling.size(),
-		(OS.get_static_memory_usage() - _start_ram) / 1_000_000, Engine.get_frames_per_second()])
-	if f.failures.is_empty():
-		print("  all checks passed")
-	for msg in f.failures:
-		print("  FAILED " + msg)
-	get_tree().quit(0 if f.failures.is_empty() else 1)
 
 
 func _drop_tree(at: Vector3) -> void:
