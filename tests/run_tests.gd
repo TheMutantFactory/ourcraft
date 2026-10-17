@@ -10,6 +10,8 @@ func _init() -> void:
 	test_grid_fill_and_counts()
 	test_negative_coordinates()
 	test_mesher_merges_faces()
+	test_mesher_matches_brute_force()
+	test_mesher_uniform_chunk_with_partial_neighbour()
 	test_cycle_detection()
 	test_paths_and_bounds()
 	test_undo_redo()
@@ -79,6 +81,57 @@ func test_mesher_merges_faces() -> void:
 		if (b - a).cross(c - a).dot(norms[idx[t]]) >= 0.0:
 			ok = false
 	check(ok, "triangles are clockwise seen from outside")
+
+
+## Total face area (in cells) of a mesh result, per normal direction.
+func _face_area(m: Dictionary) -> float:
+	if m.is_empty():
+		return 0.0
+	var faces: PackedVector3Array = m.faces
+	var area := 0.0
+	for t in range(0, faces.size(), 3):
+		area += (faces[t + 1] - faces[t]).cross(faces[t + 2] - faces[t]).length() * 0.5
+	return area
+
+
+## Exposed faces of the cells inside one chunk, counted cell by cell.
+func _brute_faces(g: VoxelGrid, key: Vector3i) -> int:
+	var n := 0
+	var o := key * VoxelGrid.SIZE
+	for z in VoxelGrid.SIZE:
+		for y in VoxelGrid.SIZE:
+			for x in VoxelGrid.SIZE:
+				var p := o + Vector3i(x, y, z)
+				if g.get_cell(p) == 0:
+					continue
+				for dir in [Vector3i.LEFT, Vector3i.RIGHT, Vector3i.UP, Vector3i.DOWN, Vector3i.FORWARD, Vector3i.BACK]:
+					if g.get_cell(p + dir) == 0:
+						n += 1
+	return n
+
+
+func test_mesher_matches_brute_force() -> void:
+	seed(1234)
+	var g := VoxelGrid.new()
+	for i in 6000:
+		var p := Vector3i(randi_range(-8, 40), randi_range(-8, 40), randi_range(-8, 40))
+		g.set_cell(p, randi_range(1, 3))
+	g.fill_box(Vector3i(4, 4, 4), Vector3i(20, 9, 30), 2)
+	var total := 0.0
+	var expected := 0
+	for key in g.chunks:
+		total += _face_area(Mesher.build(g, key, Project.DEFAULT_PALETTE, 1.0))
+		expected += _brute_faces(g, key)
+	check(is_equal_approx(total, float(expected)), "mesh area %s == exposed faces %d" % [total, expected])
+
+
+func test_mesher_uniform_chunk_with_partial_neighbour() -> void:
+	var g := VoxelGrid.new()
+	g.fill_box(Vector3i.ZERO, Vector3i(32, 32, 32), 4)
+	g.set_cell(Vector3i(32, 5, 7), 1)
+	g.set_cell(Vector3i(-1, 0, 0), 1)
+	var own := _face_area(Mesher.build(g, Vector3i.ZERO, Project.DEFAULT_PALETTE, 1.0))
+	check(is_equal_approx(own, 6.0 * 1024.0 - 2.0), "uniform chunk leaves holes where neighbours touch: %s" % own)
 
 
 func test_cycle_detection() -> void:

@@ -2,42 +2,85 @@ class_name Mesher
 extends RefCounted
 ## Greedy mesher for one VoxelGrid chunk. Faces between a solid cell and an
 ## empty one are merged into maximal same-colour rectangles per slice.
+##
+## Meshing works on a snapshot of the chunk and its six neighbours (see
+## gather), so build_from can run on a worker thread while the grid keeps
+## changing on the main thread.
+##
+## The work is arranged so native PackedByteArray operations do most of it:
+## slices along y and z are cut with slice(), identical neighbouring slices
+## (no faces between them) are skipped with one comparison, and a chunk that
+## is one solid colour only looks at its six outer faces.
 
 const S := VoxelGrid.SIZE
+const AREA := S * S
 # Mild per-direction tint so faces stay readable even in flat light.
 const SHADE := [0.88, 0.94, 1.0, 0.72, 0.82, 0.9] # +x -x +y -y +z -z
+# Slice layout per axis d: the in-slice axes (u, v) with index u + v * S,
+# chosen so y and z slices are contiguous rows. flip is true when u x v
+# points along -d, which reverses the triangle winding.
+const AXES := [[1, 2, false], [0, 2, true], [0, 1, false]]
+
+
+## Snapshot of the chunk and its neighbours: [own, -x, +x, -y, +y, -z, +z],
+## with null for missing chunks. PackedByteArrays are copy-on-write, so this
+## is cheap and later edits on the main thread don't affect it.
+static func gather(grid: VoxelGrid, key: Vector3i) -> Array:
+	var out := [grid.chunks.get(key)]
+	for d in 3:
+		for side in [-1, 1]:
+			var nk := key
+			nk[d] += side
+			out.append(grid.chunks.get(nk))
+	return out
+
+
+static func build(grid: VoxelGrid, key: Vector3i, palette: Array, cell_m: float) -> Dictionary:
+	return build_from(gather(grid, key), key, palette, cell_m)
 
 
 ## Returns {} for a chunk with no visible faces, otherwise
 ## {"arrays": Array (Mesh.ARRAY_MAX), "faces": PackedVector3Array}.
-static func build(grid: VoxelGrid, key: Vector3i, palette: Array, cell_m: float) -> Dictionary:
-	var data = grid.chunks.get(key)
+static func build_from(input: Array, key: Vector3i, palette: Array, cell_m: float) -> Dictionary:
+	var data = input[0]
 	if data == null:
 		return {}
-	var verts := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var colors := PackedColorArray()
-	var indices := PackedInt32Array()
-	var faces := PackedVector3Array()
+	var uniform := _uniform_value(data)
+	var full := PackedByteArray()
+	if uniform != 0:
+		full.resize(AREA)
+		full.fill(uniform)
+	var out := {
+		"verts": PackedVector3Array(), "normals": PackedVector3Array(),
+		"colors": PackedColorArray(), "indices": PackedInt32Array(),
+		"faces": PackedVector3Array(),
+	}
 	var origin := Vector3(key * S)
 	var pos_mask := PackedInt32Array()
 	var neg_mask := PackedInt32Array()
-	pos_mask.resize(S * S)
-	neg_mask.resize(S * S)
+	pos_mask.resize(AREA)
+	neg_mask.resize(AREA)
 
 	for d in 3:
-		var u := (d + 1) % 3
-		var v := (d + 2) % 3
-		var below = _neighbour_slice(grid, key, d, -1)
-		for i in S + 1:
+		var neg = input[1 + d * 2]
+		var pos = input[2 + d * 2]
+		var below: PackedByteArray = _slice(neg, d, S - 1) if neg != null else _empty()
+		var layers: Array = [0, S] if uniform != 0 else range(S + 1)
+		for i in layers:
 			var above: PackedByteArray
-			if i < S:
-				above = _slice(data, d, i)
+			if i == S:
+				above = _slice(pos, d, 0) if pos != null else _empty()
+			elif uniform != 0:
+				above = full
 			else:
-				var n = _neighbour_slice(grid, key, d, 1)
-				above = n
+				above = _slice(data, d, i)
+			if uniform != 0 and i == S:
+				below = full
+			if below == above:
+				below = above
+				continue
 			var any := false
-			for j in S * S:
+			for j in AREA:
 				var a: int = below[j]
 				var b: int = above[j]
 				if a != 0 and b == 0:
@@ -51,56 +94,66 @@ static func build(grid: VoxelGrid, key: Vector3i, palette: Array, cell_m: float)
 				else:
 					pos_mask[j] = 0
 					neg_mask[j] = 0
-			if any:
-				_greedy(pos_mask, d, u, v, i, 1, origin, palette, cell_m, verts, normals, colors, indices, faces)
-				_greedy(neg_mask, d, u, v, i, -1, origin, palette, cell_m, verts, normals, colors, indices, faces)
+			# Boundary planes only carry this chunk's own faces; the neighbour
+			# chunk emits the faces of its cells.
+			if any and i > 0:
+				_greedy(pos_mask, d, i, 1, origin, palette, cell_m, out)
+			if any and i < S:
+				_greedy(neg_mask, d, i, -1, origin, palette, cell_m, out)
 			below = above
 
-	if indices.is_empty():
+	if out.indices.is_empty():
 		return {}
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_COLOR] = colors
-	arrays[Mesh.ARRAY_INDEX] = indices
-	return {"arrays": arrays, "faces": faces}
+	arrays[Mesh.ARRAY_VERTEX] = out.verts
+	arrays[Mesh.ARRAY_NORMAL] = out.normals
+	arrays[Mesh.ARRAY_COLOR] = out.colors
+	arrays[Mesh.ARRAY_INDEX] = out.indices
+	return {"arrays": arrays, "faces": out.faces}
 
 
-## Extracts layer i along axis d as a S*S array indexed [u + v*S].
+## The single value filling the whole chunk, or 0 if it is mixed.
+static func _uniform_value(data: PackedByteArray) -> int:
+	var v := data[0]
+	if v != 0 and data.count(v) == VoxelGrid.VOLUME:
+		return v
+	return 0
+
+
+static func _empty() -> PackedByteArray:
+	var e := PackedByteArray()
+	e.resize(AREA)
+	return e
+
+
+## Extracts layer i along axis d in the AXES layout.
 static func _slice(data: PackedByteArray, d: int, i: int) -> PackedByteArray:
+	if d == 2:
+		return data.slice(i * AREA, (i + 1) * AREA)
+	if d == 1:
+		var rows := PackedByteArray()
+		for z in S:
+			var start := i * S + z * AREA
+			rows.append_array(data.slice(start, start + S))
+		return rows
 	var out := PackedByteArray()
-	out.resize(S * S)
-	var strides := [1, S, S * S]
-	var sd: int = strides[d]
-	var su: int = strides[(d + 1) % 3]
-	var sv: int = strides[(d + 2) % 3]
-	var base := i * sd
+	out.resize(AREA)
 	var j := 0
-	for vv in S:
-		var idx := base + vv * sv
-		for uu in S:
+	for z in S:
+		var idx := i + z * AREA
+		for y in S:
 			out[j] = data[idx]
-			idx += su
+			idx += S
 			j += 1
 	return out
 
 
-static func _neighbour_slice(grid: VoxelGrid, key: Vector3i, d: int, side: int) -> PackedByteArray:
-	var nk := key
-	nk[d] += side
-	var nd = grid.chunks.get(nk)
-	if nd == null:
-		var empty := PackedByteArray()
-		empty.resize(S * S)
-		return empty
-	return _slice(nd, d, S - 1 if side < 0 else 0)
-
-
-static func _greedy(mask: PackedInt32Array, d: int, u: int, v: int, i: int, dir: int,
-		origin: Vector3, palette: Array, cell_m: float,
-		verts: PackedVector3Array, normals: PackedVector3Array, colors: PackedColorArray,
-		indices: PackedInt32Array, faces: PackedVector3Array) -> void:
+static func _greedy(mask: PackedInt32Array, d: int, i: int, dir: int,
+		origin: Vector3, palette: Array, cell_m: float, out: Dictionary) -> void:
+	var u: int = AXES[d][0]
+	var v: int = AXES[d][1]
+	var winding := -dir if AXES[d][2] else dir
 	var normal := Vector3.ZERO
 	normal[d] = dir
 	var shade: float = SHADE[d * 2 + (0 if dir > 0 else 1)]
@@ -138,27 +191,27 @@ static func _greedy(mask: PackedInt32Array, d: int, u: int, v: int, i: int, dir:
 			dv[v] = h
 			var col: Color = palette[(c - 1) % palette.size()] * shade
 			col.a = 1.0
-			_quad(p * cell_m, du * cell_m, dv * cell_m, dir, normal, col, verts, normals, colors, indices, faces)
+			_quad(p * cell_m, du * cell_m, dv * cell_m, winding, normal, col, out)
 			uu += w
 
 
-static func _quad(p: Vector3, du: Vector3, dv: Vector3, dir: int, normal: Vector3, col: Color,
-		verts: PackedVector3Array, normals: PackedVector3Array, colors: PackedColorArray,
-		indices: PackedInt32Array, faces: PackedVector3Array) -> void:
+static func _quad(p: Vector3, du: Vector3, dv: Vector3, winding: int, normal: Vector3, col: Color,
+		out: Dictionary) -> void:
+	var verts: PackedVector3Array = out.verts
 	var base := verts.size()
 	var a := p
 	var b := p + du
 	var c := p + du + dv
 	var e := p + dv
-	verts.append_array([a, b, c, e])
+	out.verts.append_array([a, b, c, e])
 	for k in 4:
-		normals.append(normal)
-		colors.append(col)
-	# Godot treats clockwise triangles as front-facing. u x v points along +d,
-	# so a->b->c is counter-clockwise seen from +d.
-	if dir > 0:
-		indices.append_array([base, base + 3, base + 2, base, base + 2, base + 1])
-		faces.append_array([a, e, c, a, c, b])
+		out.normals.append(normal)
+		out.colors.append(col)
+	# Godot treats clockwise triangles as front-facing. When u x v points
+	# along the normal, a->b->c is counter-clockwise seen from outside.
+	if winding > 0:
+		out.indices.append_array([base, base + 3, base + 2, base, base + 2, base + 1])
+		out.faces.append_array([a, e, c, a, c, b])
 	else:
-		indices.append_array([base, base + 1, base + 2, base, base + 2, base + 3])
-		faces.append_array([a, b, c, a, c, e])
+		out.indices.append_array([base, base + 1, base + 2, base, base + 2, base + 3])
+		out.faces.append_array([a, b, c, a, c, e])

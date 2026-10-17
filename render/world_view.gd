@@ -4,7 +4,8 @@ extends Node3D
 ## object definition and shared by every instance of it, so instancing is
 ## cheap and an edit shows up in every copy at once.
 
-const MESH_BUDGET_USEC := 6000
+## Main-thread time per frame for uploading finished meshes.
+const UPLOAD_BUDGET_USEC := 4000
 
 var project: Project
 var material: StandardMaterial3D
@@ -19,6 +20,13 @@ var _nodes: Dictionary = {}
 var _nodes_by_inst: Dictionary = {}
 ## def_id -> {key -> true}
 var _dirty: Dictionary = {}
+## "def_id|key" -> edit counter, so results for stale snapshots are dropped.
+var _versions: Dictionary = {}
+## Bumped by remesh_all so jobs from before a full rebuild are dropped.
+var _generation := 0
+## Running mesh jobs: Array of {task, def_id, key, version, generation, result}
+var _jobs: Array = []
+var _max_jobs := maxi(1, OS.get_processor_count() - 1)
 var _root_node: Node3D
 var _isolated = null # PackedStringArray or null
 var _tree_dirty := false
@@ -45,6 +53,7 @@ func set_project(p: Project) -> void:
 func remesh_all() -> void:
 	_meshes.clear()
 	_dirty.clear()
+	_generation += 1
 	for def in project.defs.values():
 		for key in def.grid.chunks:
 			_dirty.get_or_add(def.id, {})[key] = true
@@ -55,13 +64,19 @@ func pending_chunks() -> int:
 	var n := 0
 	for d in _dirty.values():
 		n += d.size()
-	return n
+	return n + _jobs.size()
 
 
 func _on_voxels_changed(def_id: String, keys: Array) -> void:
 	var d: Dictionary = _dirty.get_or_add(def_id, {})
 	for key in keys:
 		d[key] = true
+		var vk := _version_key(def_id, key)
+		_versions[vk] = int(_versions.get(vk, 0)) + 1
+
+
+static func _version_key(def_id: String, key: Vector3i) -> String:
+	return "%s|%d|%d|%d" % [def_id, key.x, key.y, key.z]
 
 
 func _on_structure_changed() -> void:
@@ -71,34 +86,77 @@ func _on_structure_changed() -> void:
 func _process(_delta: float) -> void:
 	if _tree_dirty:
 		rebuild_tree()
-	var start := Time.get_ticks_usec()
-	while not _dirty.is_empty() and Time.get_ticks_usec() - start < MESH_BUDGET_USEC:
-		var def_id: String = _dirty.keys()[0]
+	_collect_jobs(UPLOAD_BUDGET_USEC)
+	_dispatch_jobs()
+
+
+## Starts mesh jobs on the worker pool for dirty chunks, skipping chunks
+## that already have a job running (they stay dirty until it finishes).
+func _dispatch_jobs() -> void:
+	if _dirty.is_empty() or _jobs.size() >= _max_jobs:
+		return
+	var running := {}
+	for job in _jobs:
+		running[_version_key(job.def_id, job.key)] = true
+	for def_id in _dirty.keys():
+		var def: ObjectDef = project.defs.get(def_id)
 		var keys: Dictionary = _dirty[def_id]
-		var key: Vector3i = keys.keys()[0]
-		keys.erase(key)
+		if def == null:
+			_dirty.erase(def_id)
+			continue
+		for key in keys.keys():
+			if _jobs.size() >= _max_jobs:
+				return
+			var vk := _version_key(def_id, key)
+			if running.has(vk):
+				continue
+			keys.erase(key)
+			var job := {
+				"def_id": def_id, "key": key, "version": _versions.get(vk, 0),
+				"generation": _generation, "result": {},
+			}
+			var input := Mesher.gather(def.grid, key)
+			var palette := project.palette.duplicate()
+			var cell_m := project.voxel_size * def.unit
+			job.task = WorkerThreadPool.add_task(func():
+				job.result = Mesher.build_from(input, key, palette, cell_m))
+			_jobs.append(job)
 		if keys.is_empty():
 			_dirty.erase(def_id)
-		_remesh(def_id, key)
+
+
+## Applies finished jobs, spending at most budget_usec (0 = wait for all).
+func _collect_jobs(budget_usec: int) -> void:
+	var start := Time.get_ticks_usec()
+	var i := 0
+	while i < _jobs.size():
+		var job: Dictionary = _jobs[i]
+		if budget_usec > 0 and not WorkerThreadPool.is_task_completed(job.task):
+			i += 1
+			continue
+		WorkerThreadPool.wait_for_task_completion(job.task)
+		_jobs.remove_at(i)
+		var vk := _version_key(job.def_id, job.key)
+		if job.generation == _generation and job.version == _versions.get(vk, 0):
+			_apply(job.def_id, job.key, job.result)
+		if budget_usec > 0 and Time.get_ticks_usec() - start > budget_usec:
+			return
 
 
 ## Meshes everything still pending right away (used before screenshots/tests).
 func flush() -> void:
 	if _tree_dirty:
 		rebuild_tree()
-	for def_id in _dirty.keys():
-		for key in _dirty[def_id].keys():
-			_remesh(def_id, key)
-	_dirty.clear()
+	while not _jobs.is_empty() or not _dirty.is_empty():
+		_dispatch_jobs()
+		_collect_jobs(0)
 
 
-func _remesh(def_id: String, key: Vector3i) -> void:
+func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 	var def: ObjectDef = project.defs.get(def_id)
 	if def == null:
 		_meshes.erase(def_id)
 		return
-	var cell_m := project.voxel_size * def.unit
-	var built := Mesher.build(def.grid, key, project.palette, cell_m)
 	var entries: Dictionary = _meshes.get_or_add(def_id, {})
 	if built.is_empty():
 		if entries.has(key):

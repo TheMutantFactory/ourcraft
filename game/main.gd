@@ -92,9 +92,15 @@ func _run_debug_args() -> void:
 			hud.toggle_help()
 		if args.has("panel"):
 			_toggle_panel(true)
+		if args.has("brush"):
+			brush_idx = maxi(0, BRUSHES.find(int(args.brush)))
 		if args.has("place"):
+			_update_aim()
+			var t0 := Time.get_ticks_msec()
 			_place()
-			view.flush()
+			while view.pending_chunks() > 0:
+				await get_tree().process_frame
+			print("place+mesh ms=%d" % (Time.get_ticks_msec() - t0))
 		for i in int(args.get("wait", "20")):
 			await get_tree().process_frame
 		print("fps=%d chunks_pending=%d" % [Engine.get_frames_per_second(), view.pending_chunks()])
