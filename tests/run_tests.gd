@@ -1,0 +1,188 @@
+extends SceneTree
+## Headless tests for the core model. Run with:
+##   godot --headless --path . --script res://tests/run_tests.gd
+
+var _failures := 0
+var _count := 0
+
+
+func _init() -> void:
+	test_grid_fill_and_counts()
+	test_negative_coordinates()
+	test_mesher_merges_faces()
+	test_cycle_detection()
+	test_paths_and_bounds()
+	test_undo_redo()
+	test_fork()
+	test_save_load_round_trip()
+	test_bundle_export_import()
+	test_demo_tree_depth()
+	print("%d checks, %d failed" % [_count, _failures])
+	quit(1 if _failures > 0 else 0)
+
+
+func check(cond: bool, msg: String) -> void:
+	_count += 1
+	if not cond:
+		_failures += 1
+		push_error("FAIL: " + msg)
+		print("FAIL: " + msg)
+
+
+func test_grid_fill_and_counts() -> void:
+	var g := VoxelGrid.new()
+	g.fill_box(Vector3i(0, 0, 0), Vector3i(40, 2, 3), 5)
+	check(g.solid_count() == 40 * 2 * 3, "fill count")
+	check(g.chunks.size() == 2, "fill spans two chunks")
+	check(g.get_cell(Vector3i(39, 1, 2)) == 5, "cell value")
+	g.fill_box(Vector3i(0, 0, 0), Vector3i(40, 2, 3), 0)
+	check(g.is_empty(), "erasing frees chunks")
+	g.fill_box(Vector3i(0, 0, 0), Vector3i(64, 32, 32), 1)
+	check(g.solid_count() == 64 * 32 * 32, "full chunk fill")
+	check(g.bounds() == AABB(Vector3.ZERO, Vector3(64, 32, 32)), "bounds")
+
+
+func test_negative_coordinates() -> void:
+	var g := VoxelGrid.new()
+	g.set_cell(Vector3i(-1, -1, -1), 3)
+	check(VoxelGrid.chunk_of(Vector3i(-1, -1, -1)) == Vector3i(-1, -1, -1), "negative chunk key")
+	check(g.get_cell(Vector3i(-1, -1, -1)) == 3, "negative cell")
+	check(g.get_cell(Vector3i(31, 31, 31)) == 0, "no aliasing")
+	check(g.bounds() == AABB(Vector3(-1, -1, -1), Vector3.ONE), "negative bounds")
+
+
+func test_mesher_merges_faces() -> void:
+	var pal: Array = Project.DEFAULT_PALETTE
+	var g := VoxelGrid.new()
+	g.set_cell(Vector3i(3, 3, 3), 1)
+	var m := Mesher.build(g, Vector3i.ZERO, pal, 1.0)
+	check(m.arrays[Mesh.ARRAY_INDEX].size() == 6 * 6, "single cell has 6 quads")
+	g.fill_box(Vector3i(0, 0, 0), Vector3i(32, 32, 32), 2)
+	m = Mesher.build(g, Vector3i.ZERO, pal, 1.0)
+	check(m.arrays[Mesh.ARRAY_INDEX].size() == 6 * 6, "full chunk merges to 6 quads")
+	g.fill_box(Vector3i(32, 0, 0), Vector3i(64, 32, 32), 2)
+	m = Mesher.build(g, Vector3i.ZERO, pal, 1.0)
+	check(m.arrays[Mesh.ARRAY_INDEX].size() == 5 * 6, "shared face with neighbour culled")
+	# Winding: first +x face triangle normal should point along +x for
+	# Godot's clockwise-front convention (cross of (b-a),(c-a) points inward).
+	var g2 := VoxelGrid.new()
+	g2.set_cell(Vector3i.ZERO, 1)
+	var m2 := Mesher.build(g2, Vector3i.ZERO, pal, 1.0)
+	var verts: PackedVector3Array = m2.arrays[Mesh.ARRAY_VERTEX]
+	var norms: PackedVector3Array = m2.arrays[Mesh.ARRAY_NORMAL]
+	var idx: PackedInt32Array = m2.arrays[Mesh.ARRAY_INDEX]
+	var ok := true
+	for t in range(0, idx.size(), 3):
+		var a := verts[idx[t]]
+		var b := verts[idx[t + 1]]
+		var c := verts[idx[t + 2]]
+		if (b - a).cross(c - a).dot(norms[idx[t]]) >= 0.0:
+			ok = false
+	check(ok, "triangles are clockwise seen from outside")
+
+
+func test_cycle_detection() -> void:
+	var p := Project.create_empty(0.01)
+	var a := p.create_def("A")
+	var b := p.create_def("B")
+	check(p.add_instance(a.id, b.id, Vector3i.ZERO) != null, "A contains B")
+	check(p.add_instance(b.id, a.id, Vector3i.ZERO) == null, "B cannot contain A")
+	check(p.add_instance(a.id, a.id, Vector3i.ZERO) == null, "A cannot contain A")
+
+
+func test_paths_and_bounds() -> void:
+	var p := Project.create_empty(0.01)
+	var cup := p.create_def("Cup", 1)
+	cup.grid.fill_box(Vector3i.ZERO, Vector3i(4, 6, 4), 1)
+	var shelf := p.create_def("Shelf", 10)
+	shelf.grid.fill_box(Vector3i.ZERO, Vector3i(10, 1, 3), 3)
+	var ci := p.add_instance(shelf.id, cup.id, Vector3i(5, 10, 5))
+	var si := p.add_instance(p.root_id, shelf.id, Vector3i(100, 0, 0), 1)
+	var path := PackedStringArray([si.id, ci.id])
+	check(p.def_at(path) == cup, "resolve path")
+	check(p.path_label(path) == "World › Shelf › Cup", "path label")
+	check(p.def_bounds(shelf.id) == AABB(Vector3.ZERO, Vector3(100, 16, 30)), "nested bounds in min units")
+	var world_origin := p.path_transform(path) * Vector3.ZERO
+	check(world_origin.is_equal_approx(Vector3(105, 10, -5)), "rotated path transform: %s" % world_origin)
+	check(not p.is_valid_path(PackedStringArray(["nope"])), "invalid path")
+
+
+func test_undo_redo() -> void:
+	var p := Project.create_empty(0.01)
+	var r := p.root()
+	p.edit_box(r.id, Vector3i.ZERO, Vector3i(3, 3, 3), 2)
+	p.edit_box(r.id, Vector3i(1, 1, 1), Vector3i(2, 2, 2), 0)
+	check(r.grid.solid_count() == 26, "edits applied")
+	p.undo()
+	check(r.grid.solid_count() == 27, "undo restores")
+	p.undo()
+	check(r.grid.is_empty(), "undo to empty")
+	p.redo()
+	check(r.grid.solid_count() == 27, "redo")
+	var d := p.create_def("Thing")
+	var inst := p.add_instance(r.id, d.id, Vector3i(1, 2, 3))
+	p.set_instance_transform(r.id, inst.id, Vector3i(9, 9, 9), 2)
+	p.undo()
+	check(r.find_child(inst.id).offset == Vector3i(1, 2, 3), "undo move")
+	p.undo()
+	check(r.find_child(inst.id) == null, "undo add")
+	p.begin_step("drag")
+	p.add_instance(r.id, d.id, Vector3i.ZERO)
+	p.cancel_step()
+	check(r.children.is_empty(), "cancelled step reverts")
+
+
+func test_fork() -> void:
+	var p := Project.create_empty(0.01)
+	var a := p.create_def("Chair", 2)
+	a.grid.set_cell(Vector3i.ZERO, 4)
+	var i1 := p.add_instance(p.root_id, a.id, Vector3i.ZERO)
+	p.add_instance(p.root_id, a.id, Vector3i(50, 0, 0))
+	check(p.usage_count(a.id) == 2, "two instances share a def")
+	var f := p.fork_def(a.id)
+	p.set_instance_def(p.root_id, i1.id, f.id)
+	f.grid.set_cell(Vector3i(1, 0, 0), 4)
+	check(a.grid.solid_count() == 1 and f.grid.solid_count() == 2, "fork is independent")
+	check(f.forked_from == a.id and f.unit == 2, "fork keeps lineage and unit")
+
+
+func test_save_load_round_trip() -> void:
+	var p := Demo.build(0.01)
+	var dir := ProjectSettings.globalize_path("user://test_projects/rt.ourcraft")
+	check(p.save_dir(dir) == OK, "save")
+	var q := Project.load_dir(dir)
+	check(q != null, "load")
+	if q == null:
+		return
+	check(q.defs.size() == p.defs.size(), "same object count")
+	for id in p.defs:
+		var a: ObjectDef = p.defs[id]
+		var b: ObjectDef = q.defs[id]
+		check(a.name == b.name and a.unit == b.unit, "def fields %s" % a.name)
+		check(a.grid.solid_count() == b.grid.solid_count(), "voxels %s" % a.name)
+		check(JSON.stringify(a.to_dict()) == JSON.stringify(b.to_dict()), "identical serialisation %s" % a.name)
+	check(q.voxel_size == p.voxel_size, "min block size")
+
+
+func test_bundle_export_import() -> void:
+	var p := Demo.build(0.01)
+	var table: ObjectDef
+	for d in p.defs.values():
+		if d.name == "Table":
+			table = d
+	var file := ProjectSettings.globalize_path("user://test_projects/table.ourobj.json")
+	check(p.export_object(table.id, file) == OK, "export")
+	var q := Project.create_empty(0.01)
+	var id := q.import_bundle(file)
+	check(id == table.id, "import returns root")
+	check(q.defs.size() == 1 + 3, "table + plate + fork imported")
+
+
+func test_demo_tree_depth() -> void:
+	var p := Demo.build(0.01)
+	var path := PackedStringArray()
+	var def := p.root()
+	while not def.children.is_empty():
+		path.append(def.children[-1].id)
+		def = p.defs[def.children[-1].def_id]
+	check(p.path_label(path) == "World › Street › House › Kitchen › Table › Fork", "demo depth: " + p.path_label(path))
