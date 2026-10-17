@@ -21,6 +21,15 @@ static func basis_for(quarter_turns: int) -> Basis:
 	return Basis.IDENTITY
 
 
+## The quarter turn a basis represents (rotation about +Y), or -1 if it
+## isn't one.
+static func quarter_turns_of(b: Basis) -> int:
+	for k in 4:
+		if b.is_equal_approx(basis_for(k)):
+			return k
+	return -1
+
+
 ## Transform from this instance's local min units to the parent's min units.
 func local_transform() -> Transform3D:
 	return Transform3D(basis_for(rot), Vector3(offset))

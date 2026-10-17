@@ -143,6 +143,14 @@ func _run_debug_args() -> void:
 			tree_lines.mark_dirty()
 		if args.has("help"):
 			hud.toggle_help()
+		if args.has("reparent"):
+			# Debug: --reparent=<object name>:<new parent name> moves the first
+			# copy of one object into the first copy of another.
+			var names := str(args.reparent).replace("_", " ").split(":")
+			var from_path = _find_path(project.root(), names[0], PackedStringArray(), 0)
+			var to_path = _find_path(project.root(), names[1], PackedStringArray(), 0)
+			if from_path != null and to_path != null:
+				_reparent(from_path, to_path)
 		if args.has("panel"):
 			var tp := Time.get_ticks_usec()
 			_toggle_panel(true)
@@ -247,6 +255,7 @@ func _connect_hud() -> void:
 		edit_path = path
 		selected = null
 		_after_context_change())
+	hud.reparent_requested.connect(_reparent)
 	hud.place_object.connect(_place_from_library)
 	hud.rename_object.connect(func(id, n): project.rename_def(id, n))
 	hud.delete_object.connect(_delete_def)
@@ -731,6 +740,46 @@ func _new_object() -> void:
 	selected = null
 	_after_context_change()
 	hud.toast("Created %s with %s blocks — you're editing it now. Backspace when done." % [def.name, _cm(want)], 5.0)
+
+
+## Moves the instance at path into the object at to_path, keeping it in
+## place in the world. Selection and the edit context follow it.
+func _reparent(path: PackedStringArray, to_path: PackedStringArray) -> void:
+	var inst := project.instance_at(path)
+	if inst == null:
+		return
+	var nm: String = project.defs[inst.def_id].name
+	var from := project.def_at(path.slice(0, path.size() - 1))
+	var to := project.def_at(to_path)
+	# How many times each object appears in the world (not just how many
+	# instances point at it): Table is used once, but House has 3 copies.
+	var copies_from := _placed_copies(from.id)
+	var copies_to := _placed_copies(to.id)
+	var why := project.reparent_path(path, to_path)
+	if why != "":
+		hud.toast("Can't move %s into %s: %s" % [nm, to.name, why], 4.0)
+		return
+	var new_path := to_path.duplicate()
+	new_path.append(inst.id)
+	if Hud._is_prefix(path, edit_path):
+		edit_path = new_path + edit_path.slice(path.size())
+		_after_context_change()
+	selected = new_path
+	var msg := "Moved %s into %s" % [nm, to.name]
+	if copies_from > 1:
+		msg += " · it left all %d copies of %s" % [copies_from, from.name]
+	if copies_to > 1:
+		msg += " · it now appears in all %d copies of %s" % [copies_to, to.name]
+	hud.toast(msg + " (Ctrl+Z to undo)", 5.0)
+	_outline_dirty = true
+
+
+func _placed_copies(def_id: String) -> int:
+	var n := 0
+	for pl in view._placements:
+		if pl.def_id == def_id:
+			n += 1
+	return n
 
 
 func _place_from_library(def_id: String) -> void:
