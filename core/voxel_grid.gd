@@ -1,10 +1,15 @@
 class_name VoxelGrid
 extends RefCounted
-## Sparse voxel storage made of fixed-size dense chunks.
+## Sparse voxel storage made of fixed-size chunks.
 ##
 ## Coordinates are integer cells in the owning object's grid. A cell value of
 ## 0 is empty; any other value is a palette index. Only chunks that contain at
 ## least one solid cell are allocated.
+##
+## Chunks are kept zstd-compressed in memory (a mostly empty 32 KB chunk packs
+## to ~130 bytes). Reads decompress a temporary copy and writes recompress,
+## about 25 µs per chunk. Packed bytes are never modified in place, so copies
+## of a grid, undo snapshots and save files can share them.
 
 const SIZE := 32
 const SHIFT := 5
@@ -12,8 +17,10 @@ const MASK := SIZE - 1
 const AREA := SIZE * SIZE
 const VOLUME := SIZE * SIZE * SIZE
 
-## Vector3i chunk key -> PackedByteArray of VOLUME cells.
-var chunks: Dictionary = {}
+const CODEC := FileAccess.COMPRESSION_ZSTD
+
+## Vector3i chunk key -> zstd-compressed PackedByteArray of VOLUME cells.
+var _packed: Dictionary = {}
 ## Vector3i chunk key -> number of solid cells.
 var counts: Dictionary = {}
 ## Vector3i chunk key -> AABB of solid cells in grid coordinates (lazy).
@@ -29,14 +36,39 @@ static func index(lx: int, ly: int, lz: int) -> int:
 
 
 func is_empty() -> bool:
-	return chunks.is_empty()
+	return _packed.is_empty()
+
+
+func keys() -> Array:
+	return _packed.keys()
+
+
+func has_chunk(key: Vector3i) -> bool:
+	return _packed.has(key)
+
+
+func chunk_count() -> int:
+	return _packed.size()
 
 
 func get_cell(p: Vector3i) -> int:
-	var data = chunks.get(chunk_of(p))
+	var data = get_chunk(chunk_of(p))
 	if data == null:
 		return 0
 	return data[index(p.x & MASK, p.y & MASK, p.z & MASK)]
+
+
+## The chunk's cells as a fresh PackedByteArray (safe to modify), or null.
+func get_chunk(key: Vector3i):
+	var packed = _packed.get(key)
+	if packed == null:
+		return null
+	return (packed as PackedByteArray).decompress(VOLUME, CODEC)
+
+
+## The chunk's compressed bytes (shared; don't modify), or null.
+func get_packed(key: Vector3i):
+	return _packed.get(key)
 
 
 func set_cell(p: Vector3i, value: int) -> Dictionary:
@@ -72,25 +104,20 @@ func fill_box(cmin: Vector3i, cmax: Vector3i, value: int) -> Dictionary:
 
 func _fill_chunk(key: Vector3i, lmin: Vector3i, lmax: Vector3i, value: int) -> bool:
 	var full := lmin == Vector3i.ZERO and lmax == Vector3i.ONE * SIZE
-	if not chunks.has(key):
+	var data = get_chunk(key)
+	if data == null:
 		if value == 0:
 			return false
-		var fresh := PackedByteArray()
-		fresh.resize(VOLUME)
-		chunks[key] = fresh
-		counts[key] = 0
+		data = PackedByteArray()
+		data.resize(VOLUME)
 	if full:
 		if value == 0:
 			_erase_chunk(key)
 		else:
-			var data: PackedByteArray = chunks[key]
 			data.fill(value)
-			chunks[key] = data
-			counts[key] = VOLUME
-			_bounds.erase(key)
+			_store(key, data, VOLUME)
 		return true
-	var data: PackedByteArray = chunks[key]
-	var count: int = counts[key]
+	var count: int = counts.get(key, 0)
 	var changed := false
 	var native := Native.kernels()
 	if native != null:
@@ -102,16 +129,18 @@ func _fill_chunk(key: Vector3i, lmin: Vector3i, lmax: Vector3i, value: int) -> b
 		changed = _fill_rows(data, lmin, lmax, value)
 		count = data.size() - data.count(0)
 	if not changed:
-		if count == 0:
-			_erase_chunk(key)
 		return false
 	if count == 0:
 		_erase_chunk(key)
 	else:
-		chunks[key] = data
-		counts[key] = count
-		_bounds.erase(key)
+		_store(key, data, count)
 	return true
+
+
+func _store(key: Vector3i, data: PackedByteArray, count: int) -> void:
+	_packed[key] = data.compress(CODEC)
+	counts[key] = count
+	_bounds.erase(key)
 
 
 ## GDScript fallback for VoxelKernels.fill_chunk. Edits data in place.
@@ -129,13 +158,12 @@ static func _fill_rows(data: PackedByteArray, lmin: Vector3i, lmax: Vector3i, va
 
 
 func _erase_chunk(key: Vector3i) -> void:
-	chunks.erase(key)
+	_packed.erase(key)
 	counts.erase(key)
 	_bounds.erase(key)
 
 
-## Replaces a whole chunk (used by undo and loading). null or an all-empty
-## array removes it.
+## Replaces a whole chunk with raw cells. null or all-empty removes it.
 func set_chunk(key: Vector3i, data) -> void:
 	if data == null:
 		_erase_chunk(key)
@@ -144,21 +172,33 @@ func set_chunk(key: Vector3i, data) -> void:
 	if count == 0:
 		_erase_chunk(key)
 		return
-	chunks[key] = data
+	_store(key, data, count)
+
+
+## Replaces a whole chunk with compressed bytes (from get_packed, undo or a
+## save file). Returns false if they don't decode to a chunk.
+func set_packed(key: Vector3i, packed) -> bool:
+	if packed == null:
+		_erase_chunk(key)
+		return true
+	var data: PackedByteArray = (packed as PackedByteArray).decompress(VOLUME, CODEC)
+	if data.size() != VOLUME:
+		return false
+	var count: int = VOLUME - data.count(0)
+	if count == 0:
+		_erase_chunk(key)
+		return true
+	_packed[key] = packed
 	counts[key] = count
 	_bounds.erase(key)
-
-
-func get_chunk_copy(key: Vector3i):
-	var data = chunks.get(key)
-	return null if data == null else data.duplicate()
+	return true
 
 
 ## Tight bounds of solid cells in grid coordinates. Empty grid -> size zero.
 func bounds() -> AABB:
 	var result := AABB()
 	var first := true
-	for key in chunks:
+	for key in _packed:
 		var b := _chunk_bounds(key)
 		if first:
 			result = b
@@ -171,7 +211,7 @@ func bounds() -> AABB:
 func _chunk_bounds(key: Vector3i) -> AABB:
 	if _bounds.has(key):
 		return _bounds[key]
-	var data: PackedByteArray = chunks[key]
+	var data: PackedByteArray = get_chunk(key)
 	var lo := Vector3i.ONE * SIZE
 	var hi := Vector3i.ZERO
 	var i := 0
@@ -190,9 +230,9 @@ func _chunk_bounds(key: Vector3i) -> AABB:
 
 func copy() -> VoxelGrid:
 	var g := VoxelGrid.new()
-	for key in chunks:
-		g.chunks[key] = chunks[key].duplicate()
-		g.counts[key] = counts[key]
+	# Packed bytes are immutable, so the copy can share them.
+	g._packed = _packed.duplicate()
+	g.counts = counts.duplicate()
 	return g
 
 

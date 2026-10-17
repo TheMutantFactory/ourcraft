@@ -52,7 +52,8 @@ func set_placements(placements: Array, visible: Callable, meshes: Dictionary) ->
 		g.buffer = buf
 		var entries: Dictionary = meshes.get(g.def_id, {})
 		for key in entries:
-			_add_node(g, key, entries[key].mesh)
+			if entries[key].mesh != null:
+				_add_node(g, key, entries[key].mesh)
 
 
 func clear() -> void:

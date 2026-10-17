@@ -13,6 +13,7 @@ extends RefCounted
 ## is one solid colour only looks at its six outer faces.
 
 const S := VoxelGrid.SIZE
+const PRIMITIVE := Mesh.PRIMITIVE_TRIANGLES
 const AREA := S * S
 # Mild per-direction tint so faces stay readable even in flat light.
 const SHADE := [0.88, 0.94, 1.0, 0.72, 0.82, 0.9] # +x -x +y -y +z -z
@@ -23,15 +24,15 @@ const AXES := [[1, 2, false], [0, 2, true], [0, 1, false]]
 
 
 ## Snapshot of the chunk and its neighbours: [own, -x, +x, -y, +y, -z, +z],
-## with null for missing chunks. The copies keep a worker's input stable
-## while the main thread goes on editing.
+## with null for missing chunks, decompressed into fresh arrays so a
+## worker's input stays stable while the main thread goes on editing.
 static func gather(grid: VoxelGrid, key: Vector3i) -> Array:
-	var out := [grid.get_chunk_copy(key)]
+	var out := [grid.get_chunk(key)]
 	for d in 3:
 		for side in [-1, 1]:
 			var nk := key
 			nk[d] += side
-			out.append(grid.get_chunk_copy(nk))
+			out.append(grid.get_chunk(nk))
 	return out
 
 

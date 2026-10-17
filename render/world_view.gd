@@ -2,7 +2,10 @@ class_name WorldView
 extends Node3D
 ## Renders a Project. Chunk meshes and collision shapes are built once per
 ## object definition and shared by every instance of it, so instancing is
-## cheap and an edit shows up in every copy at once.
+## cheap and an edit shows up in every copy at once. To save memory, a chunk
+## only gets an ArrayMesh while its object is drawn live, and a collision
+## shape only while a nearby body uses it; baked objects are remeshed straight
+## into their region.
 ##
 ## The instance tree is flattened into placements (one per rendered copy of
 ## an object, with its world transform); no nodes are created per instance.
@@ -21,8 +24,12 @@ const BAKE_BUDGET_USEC := 6000
 var project: Project
 var material: ShaderMaterial
 
-## def_id -> {Vector3i key -> {"mesh": ArrayMesh, "shape": ConcavePolygonShape3D}}
+## def_id -> {Vector3i key -> {"mesh": ArrayMesh or null, "shape":
+## ConcavePolygonShape3D or null, "users": bodies using the shape}}. Every
+## allocated chunk has an entry once processed.
 var _meshes: Dictionary = {}
+## def_id -> true for objects with at least one live placement.
+var _live_defs: Dictionary = {}
 ## def_id -> {key -> true}
 var _dirty: Dictionary = {}
 ## "def_id|key" -> edit counter, so results for stale snapshots are dropped.
@@ -57,6 +64,9 @@ func _ready() -> void:
 	_baker = RegionBaker.new()
 	_baker.material_for_depth = _material_for_depth
 	_baker.bounds_of = _chunk_bounds
+	_baker.arrays_for = _arrays_for
+	collision.shape_for = _shape_for
+	collision.release_shape = _release_shape
 	add_child(_baker)
 
 
@@ -82,10 +92,11 @@ func remesh_all() -> void:
 	if _baker != null:
 		_baker.clear()
 	_meshes.clear()
+	_live_defs.clear()
 	_dirty.clear()
 	_generation += 1
 	for def in project.defs.values():
-		for key in def.grid.chunks:
+		for key in def.grid.keys():
 			_dirty.get_or_add(def.id, {})[key] = true
 	# Rebuilt on the next frame (or flush), after callers set the edit
 	# context, so render modes are only computed once.
@@ -141,9 +152,21 @@ func _mesh_inline(budget_usec: int) -> void:
 				return
 			keys.erase(key)
 			if def != null:
-				var built := Mesher.build_from(Mesher.gather(def.grid, key), key, project.palette, project.voxel_size * def.unit)
-				_apply(def_id, key, built)
+				_apply(def_id, key, _build(def, key) if _needs_geometry(def_id, key) else {})
 		_dirty.erase(def_id)
+
+
+## Whether a changed chunk needs meshing now: its object is drawn live or a
+## body is using its collision shape. Otherwise baking will mesh it.
+func _needs_geometry(def_id: String, key: Vector3i) -> bool:
+	if _live_defs.has(def_id):
+		return true
+	var entry = _meshes.get(def_id, {}).get(key)
+	return entry != null and entry.shape != null
+
+
+func _build(def: ObjectDef, key: Vector3i) -> Dictionary:
+	return Mesher.build_from(Mesher.gather(def.grid, key), key, project.palette, project.voxel_size * def.unit)
 
 
 ## Starts mesh jobs on the worker pool for dirty chunks, skipping chunks
@@ -167,6 +190,9 @@ func _dispatch_jobs() -> void:
 			if running.has(vk):
 				continue
 			keys.erase(key)
+			if not _needs_geometry(def_id, key):
+				_apply(def_id, key, {})
+				continue
 			var job := {
 				"def_id": def_id, "key": key, "version": _versions.get(vk, 0),
 				"generation": _generation, "result": {},
@@ -212,39 +238,115 @@ func flush() -> void:
 	_baker.process(_meshes, 0)
 
 
+## Records a processed chunk. built is the mesher output, or {} when the
+## chunk wasn't meshed (its object isn't live and no body needs its shape).
 func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 	var def: ObjectDef = project.defs.get(def_id)
 	if def == null:
 		_meshes.erase(def_id)
 		return
 	var entries: Dictionary = _meshes.get_or_add(def_id, {})
-	if built.is_empty():
-		if entries.has(key):
+	if not def.grid.has_chunk(key):
+		var old = entries.get(key)
+		if old != null:
+			if old.mesh != null:
+				_renderer.chunk_removed(def_id, key)
 			entries.erase(key)
-			_renderer.chunk_removed(def_id, key)
 			collision.update_def(def_id)
 			_baker.def_changed(def_id)
 		return
 	var entry = entries.get(key)
 	var fresh: bool = entry == null
 	if fresh:
-		entry = {"mesh": ArrayMesh.new(), "shape": ConcavePolygonShape3D.new()}
-		entry.shape.backface_collision = true
+		entry = {"mesh": null, "shape": null, "users": 0}
 		entries[key] = entry
-	var mesh: ArrayMesh = entry.mesh
-	mesh.clear_surfaces()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, built.arrays)
-	# Keep a CPU copy only for objects that are baked into regions.
-	if _baker.has_def(def_id):
-		entry.arrays = built.arrays
-	else:
-		entry.erase("arrays")
-	mesh.surface_set_material(0, material)
-	entry.shape.set_faces(built.faces)
+	if _live_defs.has(def_id):
+		_set_mesh(def_id, key, entry, built)
+	if entry.shape != null:
+		entry.shape.set_faces(built.get("faces", PackedVector3Array()))
 	_baker.def_changed(def_id)
 	if fresh:
-		_renderer.chunk_added(def_id, key, mesh)
 		collision.update_def(def_id)
+
+
+func _set_mesh(def_id: String, key: Vector3i, entry: Dictionary, built: Dictionary) -> void:
+	if built.is_empty():
+		if entry.mesh != null:
+			entry.mesh = null
+			_renderer.chunk_removed(def_id, key)
+		return
+	var fresh: bool = entry.mesh == null
+	if fresh:
+		entry.mesh = ArrayMesh.new()
+	var mesh: ArrayMesh = entry.mesh
+	mesh.clear_surfaces()
+	mesh.add_surface_from_arrays(Mesher.PRIMITIVE, built.arrays)
+	mesh.surface_set_material(0, material)
+	if fresh:
+		_renderer.chunk_added(def_id, key, mesh)
+
+
+## Collision shape for a chunk, built on first use (CollisionField callback).
+func _shape_for(def_id: String, key: Vector3i) -> Shape3D:
+	var entry = _meshes.get(def_id, {}).get(key)
+	var def: ObjectDef = project.defs.get(def_id)
+	if entry == null or def == null:
+		return null
+	if entry.shape == null:
+		var built := _build(def, key)
+		if built.is_empty():
+			return null
+		var shape := ConcavePolygonShape3D.new()
+		shape.backface_collision = true
+		shape.set_faces(built.faces)
+		entry.shape = shape
+	entry.users += 1
+	return entry.shape
+
+
+## A body stopped using a chunk's shape; drop the shape when none do.
+func _release_shape(def_id: String, key: Vector3i) -> void:
+	var entry = _meshes.get(def_id, {}).get(key)
+	if entry == null:
+		return
+	entry.users -= 1
+	if entry.users <= 0:
+		entry.users = 0
+		entry.shape = null
+
+
+## Mesh arrays for baking (RegionBaker callback); null if nothing visible.
+func _arrays_for(def_id: String, key: Vector3i):
+	var def: ObjectDef = project.defs.get(def_id)
+	if def == null:
+		return null
+	var entry = _meshes.get(def_id, {}).get(key)
+	if entry != null and entry.mesh != null:
+		return (entry.mesh as ArrayMesh).surface_get_arrays(0)
+	var built := _build(def, key)
+	return null if built.is_empty() else built.arrays
+
+
+## Gives newly live objects meshes and frees meshes of objects no longer
+## drawn live.
+func _update_live_meshes(live_defs: Dictionary) -> void:
+	for def_id in _live_defs:
+		if live_defs.has(def_id):
+			continue
+		for entry in _meshes.get(def_id, {}).values():
+			entry.mesh = null
+	for def_id in live_defs:
+		if _live_defs.has(def_id):
+			continue
+		_live_defs[def_id] = true
+		var def: ObjectDef = project.defs.get(def_id)
+		if def == null:
+			continue
+		var pending: Dictionary = _dirty.get(def_id, {})
+		for key in def.grid.keys():
+			if not pending.has(key):
+				_apply(def_id, key, _build(def, key))
+	_live_defs = live_defs
 
 
 ## One material per tree depth; per-instance shader parameters run out of
@@ -293,11 +395,11 @@ func render_node_count() -> int:
 ## Bounds of a definition's allocated chunks, in its local metres.
 func _chunk_bounds(def_id: String) -> AABB:
 	var def: ObjectDef = project.defs.get(def_id)
-	if def == null or def.grid.chunks.is_empty():
+	if def == null or def.grid.is_empty():
 		return AABB()
 	var lo := Vector3i.ONE * (1 << 30)
 	var hi := -lo
-	for key in def.grid.chunks:
+	for key in def.grid.keys():
 		lo = lo.min(key)
 		hi = hi.max(key)
 	var size := VoxelGrid.SIZE * project.voxel_size * def.unit
@@ -369,6 +471,10 @@ func baked_region_count() -> int:
 	return _baker.region_count()
 
 
+func baked_quad_count() -> int:
+	return _baker.quad_count()
+
+
 func _apply_isolation() -> void:
 	_apply_render_modes()
 
@@ -388,6 +494,7 @@ func _apply_render_modes() -> void:
 		for i in collision.placements_under(_drag_inst):
 			dragged[i] = true
 	var live := {}
+	var live_defs := {}
 	for i in _placements.size():
 		if not _is_visible(i):
 			continue
@@ -395,6 +502,8 @@ func _apply_render_modes() -> void:
 		if pl.def_id == _edit_def_id or dragged.has(i) \
 				or copies["%s|%d" % [pl.def_id, pl.depth]] >= InstanceRenderer.MULTIMESH_MIN:
 			live[i] = true
+			live_defs[pl.def_id] = true
+	_update_live_meshes(live_defs)
 	_renderer.set_placements(_placements, func(i): return live.has(i), _meshes)
 	_baker.set_placements(_placements, func(i): return _is_visible(i) and not live.has(i))
 

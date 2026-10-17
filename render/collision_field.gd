@@ -12,6 +12,11 @@ const CELL := 8.0
 ## Re-query when the focus moves this far (metres).
 const MOVE_THRESHOLD := 0.5
 
+## shape_for(def_id, key) -> Shape3D or null, and release_shape(def_id, key):
+## chunk shapes are built on demand and released when no body uses them.
+var shape_for: Callable
+var release_shape: Callable
+
 ## Where the player is and how far bodies should extend around them.
 var focus := Vector3.ZERO
 var radius := 10.0
@@ -31,6 +36,8 @@ var _stale_defs: Dictionary = {}
 var _bodies: Dictionary = {}
 ## body RID -> placement index (for picking)
 var _owner: Dictionary = {}
+## "placement index|chunk key" -> [def_id, chunk key] of the body's shape
+var _shape_of: Dictionary = {}
 var _isolated = null
 var _last_focus := Vector3.INF
 var _dirty := true
@@ -166,15 +173,15 @@ func sync(meshes: Dictionary) -> void:
 			_want_chunks(i, pl, entries, want)
 	for k in _bodies.keys():
 		if not want.has(k):
-			var rid: RID = _bodies[k]
-			_owner.erase(rid)
-			PhysicsServer3D.free_rid(rid)
-			_bodies.erase(k)
+			_free_body(k)
 	for k in want:
 		if _bodies.has(k):
 			continue
 		var i: int = want[k][0]
-		var shape: Shape3D = want[k][1]
+		var shape: Shape3D = shape_for.call(want[k][1], want[k][2])
+		if shape == null:
+			continue
+		_shape_of[k] = [want[k][1], want[k][2]]
 		var rid := PhysicsServer3D.body_create()
 		PhysicsServer3D.body_set_mode(rid, PhysicsServer3D.BODY_MODE_STATIC)
 		PhysicsServer3D.body_add_shape(rid, shape.get_rid())
@@ -206,15 +213,25 @@ func _want_chunks(i: int, pl: Dictionary, entries: Dictionary, want: Dictionary)
 		var box := AABB(Vector3(key) * size, Vector3.ONE * size)
 		if _distance(box, local) > radius:
 			continue
-		want["%d|%d,%d,%d" % [i, key.x, key.y, key.z]] = [i, entries[key].shape]
+		want["%d|%d,%d,%d" % [i, key.x, key.y, key.z]] = [i, pl.def_id, key]
 
 
 func clear() -> void:
-	for rid in _bodies.values():
-		PhysicsServer3D.free_rid(rid)
-	_bodies.clear()
-	_owner.clear()
+	for k in _bodies.keys():
+		_free_body(k)
 	_dirty = true
+
+
+func _free_body(k: String) -> void:
+	var rid: RID = _bodies[k]
+	_owner.erase(rid)
+	PhysicsServer3D.free_rid(rid)
+	_bodies.erase(k)
+	var sk = _shape_of.get(k)
+	if sk != null:
+		_shape_of.erase(k)
+		if release_shape.is_valid():
+			release_shape.call(sk[0], sk[1])
 
 
 func _cells(aabb: AABB) -> Array:

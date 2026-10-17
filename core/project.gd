@@ -123,7 +123,7 @@ func set_def_unit(def_id: String, unit: int) -> void:
 	def.unit = unit
 	_clean.erase(def_id)
 	_bounds_cache.clear()
-	voxels_changed.emit(def_id, def.grid.chunks.keys())
+	voxels_changed.emit(def_id, def.grid.keys())
 	structure_changed.emit()
 	library_changed.emit()
 
@@ -290,7 +290,7 @@ func _record_chunk(def: ObjectDef, key: Vector3i) -> void:
 	_clean.erase(def.id)
 	var d: Dictionary = _step.chunks.get_or_add(def.id, {})
 	if not d.has(key):
-		d[key] = def.grid.get_chunk_copy(key)
+		d[key] = def.grid.get_packed(key) # compressed and immutable: cheap to keep
 
 
 func _record_children(def: ObjectDef) -> void:
@@ -420,9 +420,8 @@ func _apply(step: Dictionary) -> Dictionary:
 		var inv_chunks := {}
 		var affected := {}
 		for key in step.chunks[def_id]:
-			inv_chunks[key] = def.grid.get_chunk_copy(key)
-			var data = step.chunks[def_id][key]
-			def.grid.set_chunk(key, null if data == null else data.duplicate())
+			inv_chunks[key] = def.grid.get_packed(key)
+			def.grid.set_packed(key, step.chunks[def_id][key])
 			affected[key] = true
 			for n in [Vector3i.LEFT, Vector3i.RIGHT, Vector3i.UP, Vector3i.DOWN, Vector3i.FORWARD, Vector3i.BACK]:
 				affected[key + n] = true

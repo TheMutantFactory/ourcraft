@@ -4,7 +4,10 @@ extends RefCounted
 ## instances of other objects. Many instances may share one ObjectDef, so an
 ## edit to it appears everywhere it is used.
 
-const CHUNK_FORMAT := "u8-deflate-base64"
+## Chunks are stored as base64 of the in-memory zstd bytes, so saving
+## doesn't recompress. Version 1 files used deflate.
+const CHUNK_FORMAT := "u8-zstd-base64"
+const LEGACY_CHUNK_FORMAT := "u8-deflate-base64"
 
 var id: String
 var name: String
@@ -32,24 +35,23 @@ func copy_children() -> Array:
 
 
 func to_dict() -> Dictionary:
-	var keys := grid.chunks.keys()
+	var keys := grid.keys()
 	keys.sort_custom(func(a: Vector3i, b: Vector3i) -> bool:
 		if a.z != b.z: return a.z < b.z
 		if a.y != b.y: return a.y < b.y
 		return a.x < b.x)
 	var chunk_list := []
 	for key in keys:
-		var data: PackedByteArray = grid.chunks[key]
 		chunk_list.append({
 			"key": [key.x, key.y, key.z],
-			"data": Marshalls.raw_to_base64(data.compress(FileAccess.COMPRESSION_DEFLATE)),
+			"data": Marshalls.raw_to_base64(grid.get_packed(key)),
 		})
 	var child_list := []
 	for inst in children:
 		child_list.append(inst.to_dict())
 	var d := {
 		"format": "ourcraft.object",
-		"version": 1,
+		"version": 2,
 		"id": id,
 		"name": name,
 		"unit": unit,
@@ -72,14 +74,24 @@ static func from_dict(d: Dictionary) -> ObjectDef:
 	if int(d.get("chunk_size", VoxelGrid.SIZE)) != VoxelGrid.SIZE:
 		push_error("Unsupported chunk size in object %s" % def.id)
 		return def
+	var chunk_format := str(d.get("chunk_format", LEGACY_CHUNK_FORMAT))
+	if chunk_format != CHUNK_FORMAT and chunk_format != LEGACY_CHUNK_FORMAT:
+		push_error("Unknown chunk format %s in object %s" % [chunk_format, def.id])
+		return def
 	for c in d.get("chunks", []):
 		var k: Array = c["key"]
+		var key := Vector3i(int(k[0]), int(k[1]), int(k[2]))
 		var raw := Marshalls.base64_to_raw(str(c["data"]))
-		var data := raw.decompress(VoxelGrid.VOLUME, FileAccess.COMPRESSION_DEFLATE)
-		if data.size() != VoxelGrid.VOLUME:
+		var ok := true
+		if chunk_format == CHUNK_FORMAT:
+			ok = def.grid.set_packed(key, raw)
+		else:
+			var data := raw.decompress(VoxelGrid.VOLUME, FileAccess.COMPRESSION_DEFLATE)
+			ok = data.size() == VoxelGrid.VOLUME
+			if ok:
+				def.grid.set_chunk(key, data)
+		if not ok:
 			push_error("Corrupt chunk in object %s" % def.id)
-			continue
-		def.grid.set_chunk(Vector3i(int(k[0]), int(k[1]), int(k[2])), data)
 	for c in d.get("children", []):
 		def.children.append(ObjectInstance.from_dict(c))
 	return def
