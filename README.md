@@ -50,6 +50,23 @@ Table › Fork). Press **Ctrl+S** to save it to
 `user://projects/default.ourcraft/`. Once saved, later launches load it. The
 folder layout is described in [docs/file-format.md](docs/file-format.md).
 
+### WordNet test world
+
+`tools/wordnet-world.sh` builds a large test world from the part-of relations
+in [Open English WordNet](https://en-word.net/) (CC-BY 4.0; downloaded on
+first use into the git-ignored `data/`). Every object is its word written in
+blocks, colored by WordNet category. Its parts are smaller words in a row in
+front of it: wholes use 10 cm blocks, parts 5 cm, then 2 cm, then 1 cm. A
+part shared by several wholes is one object instanced in each. The world has
+about 7,000 objects and 8,700 placed copies, up to 15 levels deep.
+
+```bash
+tools/wordnet-world.sh
+tools/run.sh --project=user://projects/wordnet.ourcraft
+```
+
+Sources are listed in [docs/bibliography.md](docs/bibliography.md).
+
 ## Concepts
 
 - **Smallest block size** is a project setting (default 1 cm; Tab → Settings).
@@ -97,5 +114,5 @@ folder layout is described in [docs/file-format.md](docs/file-format.md).
 - `game/`: player controller and input handling
 - `ui/`: HUD and side panel
 - `tests/`: headless core tests
-- `tools/`: run, test, editor and native build scripts
+- `tools/`: run, test, editor, native build, stress and WordNet world scripts
 - `native/`: C++ GDExtension for voxel fill and meshing (godot-cpp is a submodule)

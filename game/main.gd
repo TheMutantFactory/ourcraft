@@ -9,7 +9,7 @@ extends Node3D
 ##   selects the deepest object under the crosshair; pressing Q again walks
 ##   up the tree one level at a time.
 
-const PROJECT_PATH := "user://projects/default.ourcraft"
+const DEFAULT_PROJECT := "user://projects/default.ourcraft"
 const BRUSHES := [1, 2, 5, 10, 25, 50, 100] # in minimum blocks
 
 var project: Project
@@ -24,6 +24,8 @@ var isolated := false
 var color := 1
 var brush_idx := 3
 var clipboard := ""
+## Folder Ctrl+S saves to and Ctrl+O reloads from.
+var project_path := DEFAULT_PROJECT
 ## Place/break flush against the aimed surface (true) or snap to the brush
 ## grid on all axes (false). T toggles.
 var on_surface := true
@@ -47,7 +49,11 @@ func _ready() -> void:
 	add_child(hud)
 	_connect_hud()
 
-	var loaded := Project.load_dir(ProjectSettings.globalize_path(PROJECT_PATH))
+	# tools/run.sh --project=<folder> opens (and saves to) another project.
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--project="):
+			project_path = a.trim_prefix("--project=")
+	var loaded := Project.load_dir(ProjectSettings.globalize_path(project_path))
 	if loaded != null:
 		_use_project(loaded)
 		hud.toast("Loaded %s" % loaded.title)
@@ -94,6 +100,8 @@ func _run_debug_args() -> void:
 		player.look(Vector2(0, -deg_to_rad(v[4]) / player.mouse_sensitivity))
 	if args.has("size"):
 		player.set_size(float(args.size))
+	if args.has("goto"):
+		_goto(str(args.goto).replace("_", " "))
 	if args.has("fly"):
 		player.flying = true
 	if args.has("shot"):
@@ -116,7 +124,11 @@ func _run_debug_args() -> void:
 		if args.has("help"):
 			hud.toggle_help()
 		if args.has("panel"):
+			var tp := Time.get_ticks_usec()
 			_toggle_panel(true)
+			hud.refresh_outline(project, edit_path, selected)
+			hud.refresh_library(project)
+			print("panel refresh ms=%.0f" % ((Time.get_ticks_usec() - tp) / 1000.0))
 		if args.has("grid"):
 			on_surface = false
 		if args.has("brush"):
@@ -151,6 +163,38 @@ func set_ui_scale(value: float) -> void:
 	Settings.set_ui_scale(value)
 	hud.set_ui_scale_value(value)
 	hud.toast("Text size %s×" % Hud._fmt(value))
+
+
+## Development hook: puts the camera in front of the first copy of the
+## object with this name, looking at its word.
+func _goto(name: String) -> void:
+	var path = _find_path(project.root(), name, PackedStringArray(), 0)
+	if path == null:
+		hud.toast("No object named %s" % name)
+		return
+	var def := project.def_at(path)
+	var xf := _world_xform(path)
+	var own := def.grid.bounds()
+	var box := xf * AABB(own.position * def.unit, own.size * def.unit)
+	var dist := maxf(box.size.x, box.size.y) * 1.2 + 0.3
+	player.flying = true
+	player.global_position = box.get_center() + Vector3(0, -Player.EYE * player.size, dist)
+	player.rotation = Vector3.ZERO
+	player.look(Vector2.ZERO)
+
+
+func _find_path(def: ObjectDef, name: String, path: PackedStringArray, depth: int):
+	if def.name == name:
+		return path
+	if depth > Project.MAX_DEPTH:
+		return null
+	for inst in def.children:
+		var p := path.duplicate()
+		p.append(inst.id)
+		var found = _find_path(project.defs[inst.def_id], name, p, depth + 1)
+		if found != null:
+			return found
+	return null
 
 
 func _setup_input() -> void:
@@ -621,10 +665,10 @@ func _run_command(cmd: String) -> void:
 				clipboard = project.def_at(selected).id
 				_place_from_library(clipboard)
 		"save":
-			var err := project.save_dir(ProjectSettings.globalize_path(PROJECT_PATH))
+			var err := project.save_dir(ProjectSettings.globalize_path(project_path))
 			hud.toast("Saved" if err == OK else "Save failed: %s" % error_string(err))
 		"load":
-			var p := Project.load_dir(ProjectSettings.globalize_path(PROJECT_PATH))
+			var p := Project.load_dir(ProjectSettings.globalize_path(project_path))
 			if p == null:
 				hud.toast("No saved world yet (Ctrl+S to save)")
 			else:
