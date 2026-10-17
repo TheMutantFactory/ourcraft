@@ -7,6 +7,7 @@
 | `tools/stress.sh` | Performance at increasing scale (see [perf/](perf/)). |
 | `tools/wordnet-world.sh` | A real-vocabulary test world from WordNet's part-of relations. |
 | `tools/synthetic-world.sh` | A synthetic deep-and-wide tree of random words, flat on the ground. |
+| `tools/hole.sh` | The hole scenario: a watchable soak test of creating and deleting object trees. |
 
 ## Tree fuzzing
 
@@ -76,6 +77,42 @@ object. Words lie flat on the ground like an org chart. Press **L** in the
 game to draw the relationship lines, which come from the live tree and stay
 correct after edits. `--mutations` scrambles the world with the fuzzer's
 operations (`--check` also runs its invariant checks, slowly).
+
+## Hole scenario
+
+```bash
+tools/hole.sh                # watch it
+tools/hole.sh --soak=120     # run 120 s, check, report, quit (non-zero exit on failure)
+```
+
+An 8 m square hole sits in the middle of the map and destroys anything
+that touches it. Three clouds circle above it and each drops a new tree of
+upright words every 1.5–3.5 s. The trees fall under gravity with some
+sideways drift: most go into the hole, a few land beside it.
+
+- **Destruction:** a destroyed tree is removed and every object only it
+  used is deleted from the library (`Project.remove_and_prune`). Objects
+  that end up over the hole (dragged there, or landed half over it) start
+  falling. World blocks over the hole are erased, and a player who falls in
+  is respawned at the edge.
+- **Undo:** off while the scenario runs (`Project.set_recording(false)`),
+  so the simulation doesn't flood the history.
+- **Live drawing:** falling trees and clouds are drawn live
+  (`WorldView.set_dynamic`), not baked, since they move every frame.
+- **HUD:** shows spawned, destroyed, landed and falling counts and the
+  library size.
+- **Isolation:** it runs on `user://projects/hole-scratch.ourcraft`, which
+  is only saved if you press Ctrl+S.
+
+`--soak` also pokes the hole every 5 s: it drags a landed tree over it,
+places a world block over it and drops the player in, and fails if any of
+these isn't dealt with within 4 s. At the end it runs the fuzzer's
+invariant and view checks on the live project and fails if any object is
+left that nothing uses (a leak).
+
+A 120 s soak (2026-10-17): 142 trees spawned, 94 destroyed, 577 objects
+deleted, 23 player drops, all checks passed, about 110 fps, RAM +28 MB
+(mostly trees that landed and stayed).
 
 ## What these found (2026-10-17)
 

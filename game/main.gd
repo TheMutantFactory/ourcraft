@@ -18,6 +18,8 @@ var player: Player
 var hud: Hud
 var overlay: Overlay
 var tree_lines: TreeLines
+## The running scenario (HoleScenario), if any.
+var scenario: HoleScenario
 
 var edit_path := PackedStringArray()
 var selected = null # PackedStringArray or null
@@ -39,7 +41,12 @@ var _outline_dirty := true
 func _ready() -> void:
 	_setup_window()
 	_setup_input()
-	Scenery.add_to(self)
+	# --scenario=hole runs the hole soak test (tools/hole.sh).
+	var scenario_name := ""
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--scenario="):
+			scenario_name = a.trim_prefix("--scenario=")
+	Scenery.add_to(self, HoleScenario.HOLE if scenario_name == "hole" else 0.0)
 	view = WorldView.new()
 	add_child(view)
 	overlay = Overlay.new()
@@ -60,10 +67,22 @@ func _ready() -> void:
 	if loaded != null:
 		_use_project(loaded)
 		hud.toast("Loaded %s" % loaded.title)
+	elif scenario_name != "":
+		_use_project(Project.create_empty(Settings.min_block_m()))
 	else:
 		_use_project(Demo.build(Settings.min_block_m()))
 		hud.toast("Welcome! H shows the controls.", 8.0)
 	_reset_player()
+	if scenario_name == "hole":
+		scenario = HoleScenario.new()
+		add_child(scenario)
+		scenario.attach(self, project, view)
+		for a in OS.get_cmdline_user_args():
+			if a.begins_with("--soak="):
+				scenario.soak = float(a.trim_prefix("--soak="))
+		player.global_position = Vector3(0, 0.2, HoleScenario.HOLE * 0.5 + 6.0)
+		player.set_pitch(deg_to_rad(20))
+		hud.toast("Hole scenario: clouds drop word trees into the hole. Undo is off.", 6.0)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_run_debug_args()
 
@@ -101,7 +120,7 @@ func _run_debug_args() -> void:
 		var v := str(args.pose).split_floats(",")
 		player.global_position = Vector3(v[0], v[1], v[2])
 		player.rotation.y = deg_to_rad(v[3])
-		player.look(Vector2(0, -deg_to_rad(v[4]) / player.mouse_sensitivity))
+		player.set_pitch(deg_to_rad(v[4]))
 	if args.has("size"):
 		player.set_size(float(args.size))
 	if args.has("goto"):
@@ -296,6 +315,8 @@ func _use_project(p: Project) -> void:
 	view.set_project(project)
 	view.set_isolation(null)
 	view.set_edit_def(project.root_id)
+	if scenario != null:
+		scenario.attach(self, project, view)
 	_refresh_hud_static()
 
 
@@ -468,7 +489,12 @@ func _refresh_hud_dynamic() -> void:
 	txt += "   ·   You: %sx%s" % [Hud._fmt(player.size), "   ·   flying" if player.flying else ""]
 	hud.brush_label.text = txt
 	var pending := view.pending_chunks()
-	hud.status_label.text = ("Meshing %d chunks…" % pending) if pending > 0 else "%d fps\nH: controls" % Engine.get_frames_per_second()
+	var status := ("Meshing %d chunks…" % pending) if pending > 0 else "%d fps\nH: controls" % Engine.get_frames_per_second()
+	if scenario != null:
+		var st: Dictionary = scenario.stats
+		status += "\nspawned %d · destroyed %d · landed %d\nfalling %d · library %d objects" % [
+			st.spawned, st.destroyed, st.landed, scenario.falling_count(), project.defs.size()]
+	hud.status_label.text = status
 
 
 # --- Input -----------------------------------------------------------------

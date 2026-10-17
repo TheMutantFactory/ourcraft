@@ -57,6 +57,12 @@ func look(relative: Vector2) -> void:
 	camera.rotation.x = _pitch
 
 
+## Sets the look angle (radians, positive looks up).
+func set_pitch(p: float) -> void:
+	_pitch = clampf(p, -PI / 2 + 0.01, PI / 2 - 0.01)
+	camera.rotation.x = _pitch
+
+
 func _physics_process(delta: float) -> void:
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 	var input := Vector2.ZERO

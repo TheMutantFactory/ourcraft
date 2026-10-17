@@ -43,6 +43,8 @@ func _run() -> void:
 	test_outline_builds_rows_lazily()
 	test_corner_reparent()
 	test_reparent_keeps_world_position()
+	test_remove_and_prune()
+	test_recording_off()
 	test_outline_drop_rules()
 	test_corner_depth_limit()
 	test_corner_wide_and_empty()
@@ -546,6 +548,46 @@ func test_reparent_keeps_world_position() -> void:
 	check(p.reparent_path(PackedStringArray(), PackedStringArray([ih.id])) != "", "the world can't be moved")
 	p.undo()
 	check(p.root().find_child(il.id) != null, "undo brings the lamp back to the world")
+
+
+func test_remove_and_prune() -> void:
+	var p := Project.create_empty(0.01)
+	var trees := WordTrees.new(3)
+	var a := trees.build(p, 3, 3)
+	var shared := p.create_def("Shared")
+	a.children.append(Demo._inst(p, shared.id, Vector3i.ZERO, 0))
+	var keep := p.create_def("Keeper")
+	keep.children.append(Demo._inst(p, shared.id, Vector3i.ZERO, 0))
+	p.add_instance(p.root_id, keep.id, Vector3i.ZERO)
+	var ia := p.add_instance(p.root_id, a.id, Vector3i(500, 0, 0))
+	var tree_defs := p.dependencies(a.id).size()
+	var deleted := p.remove_and_prune(p.root_id, ia.id)
+	check(deleted == tree_defs - 1, "pruning deletes the tree's objects but not the shared one (%d of %d)" % [deleted, tree_defs])
+	check(p.defs.has(shared.id) and p.defs.has(keep.id) and not p.defs.has(a.id), "shared and unrelated objects survive")
+	var dangling := false
+	for d in p.defs.values():
+		for inst in d.children:
+			if not p.defs.has(inst.def_id):
+				dangling = true
+	check(not dangling, "no dangling instances after pruning")
+
+
+func test_recording_off() -> void:
+	var p := Project.create_empty(0.01)
+	p.edit_box(p.root_id, Vector3i.ZERO, Vector3i.ONE, 1)
+	p.set_recording(false)
+	check(not p.can_undo(), "turning recording off clears history")
+	p.edit_box(p.root_id, Vector3i(5, 0, 0), Vector3i(6, 1, 1), 1)
+	var d := p.create_def("Thing")
+	p.add_instance(p.root_id, d.id, Vector3i.ZERO)
+	check(not p.can_undo() and p.root().grid.solid_count() == 2, "changes apply but aren't recorded")
+	p.begin_step("drag")
+	var i := p.add_instance(p.root_id, d.id, Vector3i(9, 0, 0))
+	p.cancel_step()
+	check(p.root().find_child(i.id) == null, "cancel still reverts without recording")
+	p.set_recording(true)
+	p.edit_box(p.root_id, Vector3i(7, 0, 0), Vector3i(8, 1, 1), 1)
+	check(p.can_undo(), "recording resumes")
 
 
 func test_outline_drop_rules() -> void:

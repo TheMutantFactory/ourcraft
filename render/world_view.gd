@@ -55,7 +55,10 @@ var _baker: RegionBaker
 var _isolated = null
 ## The object being edited and the instance being dragged stay live.
 var _edit_def_id := ""
-var _drag_inst := "" # PackedStringArray or null
+var _drag_inst := ""
+## Instance ids that move every frame (falling objects, clouds) and so stay
+## live instead of being baked.
+var _dynamic: Dictionary = {}
 var _tree_dirty := false
 
 
@@ -493,6 +496,12 @@ func set_dragging(inst_id: String) -> void:
 	_apply_render_modes()
 
 
+## Marks instances that move every frame, so they're drawn live.
+func set_dynamic(inst_ids: Dictionary) -> void:
+	_dynamic = inst_ids.duplicate()
+	_apply_render_modes()
+
+
 func baked_region_count() -> int:
 	return _baker.region_count()
 
@@ -516,8 +525,8 @@ func _apply_render_modes() -> void:
 			var gk := "%s|%d" % [pl.def_id, pl.depth]
 			copies[gk] = int(copies.get(gk, 0)) + 1
 	var dragged := {}
-	if _drag_inst != "":
-		for i in collision.placements_under(_drag_inst):
+	for inst_id in _dynamic.keys() + ([_drag_inst] if _drag_inst != "" else []):
+		for i in collision.placements_under(inst_id):
 			dragged[i] = true
 	var live := {}
 	var live_defs := {}

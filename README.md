@@ -66,7 +66,9 @@ tools/run.sh --project=user://projects/wordnet.ourcraft
 ```
 
 Sources are listed in [docs/bibliography.md](docs/bibliography.md). For the
-synthetic tree world and the tree fuzzer, see [docs/testing.md](docs/testing.md).
+synthetic tree world, the tree fuzzer and the hole scenario (`tools/hole.sh`:
+clouds drop word trees into a hole that destroys what touches it), see
+[docs/testing.md](docs/testing.md).
 
 ## Concepts
 
