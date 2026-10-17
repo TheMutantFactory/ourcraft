@@ -91,8 +91,8 @@ func _series(title: String, unit: String, max_exp: int, make: Callable, start :=
 	_line("")
 	_line("## " + title)
 	_line("")
-	_line("| %s | generate ms | mesh + nodes ms | chunks | quads | nodes | draw calls | frame ms (cpu / gpu) | fps | 1 edit ms | save ms / MB | load ms | +RAM MB | +VRAM MB |" % unit)
-	_line("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+	_line("| %s | generate ms | mesh + nodes ms | chunks | quads | nodes | bodies | draw calls | frame ms (cpu / gpu) | fps | 1 edit ms | save ms / MB | load ms | +RAM MB | +VRAM MB |" % unit)
+	_line("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 	var prev := {}
 	for e in range(start, max_exp + 1):
 		var n := int(pow(10, e))
@@ -103,9 +103,9 @@ func _series(title: String, unit: String, max_exp: int, make: Callable, start :=
 				break
 		var r: Dictionary = await _measure(n, make)
 		prev = r
-		_line("| %s | %s | %s | %s | %s | %s | %s | %.1f / %s | %d | %s | %s / %.1f | %s | %d | %d |" % [
+		_line("| %s | %s | %s | %s | %s | %s | %s | %s | %.1f / %s | %d | %s | %s / %.1f | %s | %d | %d |" % [
 			_fmt_int(n), _fmt_ms(r.gen_ms), _fmt_ms(r.build_ms), _fmt_int(r.chunks), _fmt_int(r.quads), _fmt_int(r.nodes),
-			_fmt_int(r.draw_calls), r.cpu_ms, ("%.1f" % r.gpu_ms) if r.gpu_ms > 0.0 else "n/a", r.fps, _fmt_ms(r.edit_ms),
+			_fmt_int(r.bodies), _fmt_int(r.draw_calls), r.cpu_ms, ("%.1f" % r.gpu_ms) if r.gpu_ms > 0.0 else "n/a", r.fps, _fmt_ms(r.edit_ms),
 			_fmt_ms(r.save_ms), r.save_mb, _fmt_ms(r.load_ms), r.ram_mb, r.vram_mb])
 
 
@@ -151,7 +151,13 @@ func _measure(n: int, make: Callable) -> Dictionary:
 	r.quads = quads
 	r.nodes = get_tree().get_node_count()
 
-	_frame(built.bounds)
+	# Collision as if a player stood in the middle of the scene.
+	var b: AABB = built.bounds
+	view.set_focus(b.get_center(), 10.0)
+	_frame(b)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	r.bodies = view.collision.active_count() if view.collision != null else -1
 	for i in WARMUP_FRAMES:
 		await get_tree().process_frame
 	var vp := get_viewport().get_viewport_rid()

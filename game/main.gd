@@ -125,7 +125,7 @@ func _run_debug_args() -> void:
 			print("place+mesh ms=%d" % (Time.get_ticks_msec() - t0))
 		for i in int(args.get("wait", "20")):
 			await get_tree().process_frame
-		print("fps=%d chunks_pending=%d" % [Engine.get_frames_per_second(), view.pending_chunks()])
+		print("fps=%d chunks_pending=%d player_y=%.3f bodies=%d" % [Engine.get_frames_per_second(), view.pending_chunks(), player.global_position.y, view.collision.active_count()])
 		get_viewport().get_texture().get_image().save_png(str(args.shot))
 		get_tree().quit()
 
@@ -255,6 +255,10 @@ func _cm(min_units: float) -> String:
 # --- Per-frame -------------------------------------------------------------
 
 func _physics_process(_delta: float) -> void:
+	# Bodies exist only within reach of the player; a little margin covers
+	# walking into things.
+	view.set_focus(player.global_position + Vector3.UP * Player.EYE * player.size,
+		player.reach() + 2.0 * maxf(player.size, 0.5))
 	_update_aim()
 	if not _grab.is_empty():
 		_update_grab()
@@ -284,12 +288,12 @@ func _update_aim() -> void:
 	var hit := get_world_3d().direct_space_state.intersect_ray(q)
 	if hit.is_empty():
 		return
-	var body: Object = hit.collider
+	var info := view.pick(hit)
 	_aim = {
 		"pos": hit.position,
 		"normal": hit.normal,
-		"path": body.get_meta("path") if body.has_meta("path") else null,
-		"def_id": body.get_meta("def_id") if body.has_meta("def_id") else "",
+		"path": info.get("path"),
+		"def_id": info.get("def_id", ""),
 	}
 
 

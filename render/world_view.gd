@@ -30,6 +30,9 @@ var _generation := 0
 var _jobs: Array = []
 var _max_jobs := maxi(1, OS.get_processor_count() - 1)
 var _depth_materials: Array = []
+## Physics bodies near the player (see CollisionField).
+var collision: CollisionField
+var _placements: Array = []
 var _root_node: Node3D
 var _isolated = null # PackedStringArray or null
 var _tree_dirty := false
@@ -37,8 +40,14 @@ var _tree_dirty := false
 
 func _ready() -> void:
 	Native.kernels() # initialise on the main thread before workers use it
+	collision = CollisionField.new(get_world_3d().space)
 	material = ShaderMaterial.new()
 	material.shader = load("res://render/voxel.gdshader")
+
+
+func _exit_tree() -> void:
+	if collision != null:
+		collision.clear()
 
 
 func set_project(p: Project) -> void:
@@ -53,6 +62,8 @@ func set_project(p: Project) -> void:
 
 ## Rebuilds every mesh (e.g. after the minimum block size changes).
 func remesh_all() -> void:
+	if collision != null:
+		collision.clear()
 	_meshes.clear()
 	_dirty.clear()
 	_generation += 1
@@ -191,6 +202,7 @@ func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 				var n: Node = container.get_node_or_null(_key_name(key))
 				if n != null:
 					n.free()
+			collision.update_def(def_id)
 		return
 	var entry = entries.get(key)
 	var fresh: bool = entry == null
@@ -206,6 +218,7 @@ func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 	if fresh:
 		for container in _containers.get(def_id, []):
 			_add_chunk_node(container, key, entry)
+		collision.update_def(def_id)
 
 
 ## One material per tree depth; per-instance shader parameters run out of
@@ -228,13 +241,6 @@ func _add_chunk_node(container: Node3D, key: Vector3i, entry: Dictionary) -> voi
 	mi.mesh = entry.mesh
 	# Deeper objects win where faces are coplanar (see voxel.gdshader).
 	mi.material_override = _material_for_depth(container.get_meta("path").size())
-	var body := StaticBody3D.new()
-	body.set_meta("path", container.get_meta("path"))
-	body.set_meta("def_id", container.get_meta("def_id"))
-	var cs := CollisionShape3D.new()
-	cs.shape = entry.shape
-	body.add_child(cs)
-	mi.add_child(body)
 	container.add_child(mi)
 
 
@@ -247,18 +253,43 @@ func rebuild_tree() -> void:
 	_containers.clear()
 	_nodes.clear()
 	_nodes_by_inst.clear()
-	_root_node = _build_node(project.root_id, PackedStringArray(), null, 0)
+	_placements = []
+	_root_node = _build_node(project.root_id, PackedStringArray(), null, 0, Transform3D.IDENTITY)
 	add_child(_root_node)
+	collision.set_placements(_placements, _chunk_bounds)
 	_apply_isolation()
 
 
-func _build_node(def_id: String, path: PackedStringArray, inst: ObjectInstance, depth: int) -> Node3D:
+## Bounds of a definition's allocated chunks, in its local metres.
+func _chunk_bounds(def_id: String) -> AABB:
+	var def: ObjectDef = project.defs.get(def_id)
+	if def == null or def.grid.chunks.is_empty():
+		return AABB()
+	var lo := Vector3i.ONE * (1 << 30)
+	var hi := -lo
+	for key in def.grid.chunks:
+		lo = lo.min(key)
+		hi = hi.max(key)
+	var size := VoxelGrid.SIZE * project.voxel_size * def.unit
+	return AABB(Vector3(lo) * size, Vector3(hi - lo + Vector3i.ONE) * size)
+
+
+## World transform (metres) of the object at a path.
+func world_xform(path: PackedStringArray) -> Transform3D:
+	var t := project.path_transform(path)
+	t.origin *= project.voxel_size
+	return t
+
+
+func _build_node(def_id: String, path: PackedStringArray, inst: ObjectInstance, depth: int, parent_xform: Transform3D) -> Node3D:
 	var node := Node3D.new()
+	var xform := parent_xform
 	node.name = "i_" + (inst.id if inst != null else "root")
 	node.set_meta("path", path)
 	if inst != null:
 		_apply_transform(node, inst)
 		_nodes_by_inst.get_or_add(inst.id, []).append(node)
+		xform = parent_xform * node.transform
 	_nodes["/".join(path)] = node
 	var container := Node3D.new()
 	container.name = "chunks"
@@ -270,11 +301,14 @@ func _build_node(def_id: String, path: PackedStringArray, inst: ObjectInstance, 
 	for key in entries:
 		_add_chunk_node(container, key, entries[key])
 	var def: ObjectDef = project.defs.get(def_id)
+	if def != null:
+		_placements.append({"path": path, "def_id": def_id, "xform": xform,
+			"cell_m": project.voxel_size * def.unit})
 	if def != null and depth < Project.MAX_DEPTH:
 		for child in def.children:
 			var child_path := path.duplicate()
 			child_path.append(child.id)
-			node.add_child(_build_node(child.def_id, child_path, child, depth + 1))
+			node.add_child(_build_node(child.def_id, child_path, child, depth + 1, xform))
 	return node
 
 
@@ -287,6 +321,7 @@ func _apply_transform(node: Node3D, inst: ObjectInstance) -> void:
 func refresh_instance(inst: ObjectInstance) -> void:
 	for node in _nodes_by_inst.get(inst.id, []):
 		_apply_transform(node, inst)
+	collision.refresh_instance(inst.id, world_xform)
 
 
 func node_for(path: PackedStringArray) -> Node3D:
@@ -295,11 +330,23 @@ func node_for(path: PackedStringArray) -> Node3D:
 
 ## Physics bodies belonging to every rendered copy of an instance.
 func bodies_of(inst_id: String) -> Array:
-	var out := []
-	for node in _nodes_by_inst.get(inst_id, []):
-		for b in node.find_children("*", "StaticBody3D", true, false):
-			out.append(b.get_rid())
-	return out
+	return collision.bodies_of(inst_id)
+
+
+## {path, def_id} of the chunk a ray hit, or {} (e.g. for the ground).
+func pick(hit: Dictionary) -> Dictionary:
+	return collision.info(hit.get("rid", RID()))
+
+
+## Keeps physics bodies around this point (call every physics frame).
+func set_focus(point: Vector3, reach: float) -> void:
+	collision.focus = point
+	collision.radius = reach
+
+
+func _physics_process(_delta: float) -> void:
+	if collision != null and project != null:
+		collision.sync(_meshes)
 
 
 # --- Isolation -------------------------------------------------------------
@@ -307,6 +354,7 @@ func bodies_of(inst_id: String) -> Array:
 ## Shows only the object at path (and its contents); null shows everything.
 func set_isolation(path) -> void:
 	_isolated = path
+	collision.set_isolation(path)
 	_apply_isolation()
 
 
