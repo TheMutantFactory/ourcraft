@@ -40,6 +40,10 @@ var root_id := ""
 
 var _undo: Array = []
 var _redo: Array = []
+## When false, mutations still work (and cancel_step still reverts) but
+## nothing is added to undo history. Simulations use this so they don't
+## flood the user's history.
+var recording := true
 var _step = null
 var _depth := 0
 var _bounds_cache: Dictionary = {}
@@ -281,6 +285,56 @@ func def_bounds(def_id: String, depth := 0) -> AABB:
 
 # --- Undoable mutations ----------------------------------------------------
 
+## Turns undo recording on or off. Turning it off clears the history, since
+## unrecorded changes would make older steps restore stale states.
+func set_recording(on: bool) -> void:
+	recording = on
+	if not on:
+		_undo.clear()
+		_redo.clear()
+
+
+## Removes an instance, then deletes every object that was only used inside
+## it (nothing else refers to it any more). Returns how many objects were
+## deleted. Clears undo history if objects were deleted while recording,
+## like delete_def.
+func remove_and_prune(parent_id: String, inst_id: String) -> int:
+	var parent: ObjectDef = defs.get(parent_id)
+	if parent == null:
+		return 0
+	var inst := parent.find_child(inst_id)
+	if inst == null:
+		return 0
+	var candidates := dependencies(inst.def_id)
+	begin_step("Delete object")
+	_record_children(parent)
+	parent.children.erase(inst)
+	end_step()
+	var counts := usage_counts()
+	var deleted := 0
+	var changed := true
+	while changed:
+		changed = false
+		for id in candidates:
+			if id == root_id or not defs.has(id) or counts.get(id, 0) > 0:
+				continue
+			for child in defs[id].children:
+				counts[child.def_id] = int(counts.get(child.def_id, 0)) - 1
+			defs.erase(id)
+			_clean.erase(id)
+			deleted += 1
+			changed = true
+	if deleted > 0:
+		_removed_since_save = true
+		if recording:
+			_undo.clear()
+			_redo.clear()
+	_bounds_cache.clear()
+	structure_changed.emit()
+	library_changed.emit()
+	return deleted
+
+
 func begin_step(label: String) -> void:
 	if _depth == 0:
 		_step = {"label": label, "chunks": {}, "children": {}}
@@ -291,7 +345,7 @@ func end_step() -> void:
 	_depth -= 1
 	if _depth > 0:
 		return
-	if not (_step.chunks.is_empty() and _step.children.is_empty()):
+	if recording and not (_step.chunks.is_empty() and _step.children.is_empty()):
 		_undo.append(_step)
 		_redo.clear()
 		if _undo.size() > MAX_HISTORY:
