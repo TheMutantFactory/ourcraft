@@ -130,7 +130,7 @@ func _run_debug_args() -> void:
 			print("place+mesh ms=%d" % (Time.get_ticks_msec() - t0))
 		for i in int(args.get("wait", "20")):
 			await get_tree().process_frame
-		print("fps=%d chunks_pending=%d player_y=%.3f bodies=%d" % [Engine.get_frames_per_second(), view.pending_chunks(), player.global_position.y, view.collision.active_count()])
+		print("fps=%d chunks_pending=%d player_y=%.3f bodies=%d regions=%d render_nodes=%d" % [Engine.get_frames_per_second(), view.pending_chunks(), player.global_position.y, view.collision.active_count(), view.baked_region_count(), view.render_node_count()])
 		get_viewport().get_texture().get_image().save_png(str(args.shot))
 		get_tree().quit()
 
@@ -215,6 +215,7 @@ func _use_project(p: Project) -> void:
 	_grab = {}
 	view.set_project(project)
 	view.set_isolation(null)
+	view.set_edit_def(project.root_id)
 	_refresh_hud_static()
 
 
@@ -561,6 +562,7 @@ func _select(down: bool) -> void:
 
 
 func _after_context_change() -> void:
+	view.set_edit_def(_edit_def().id)
 	if isolated:
 		view.set_isolation(edit_path)
 	_refresh_hud_static()
@@ -700,6 +702,7 @@ func _start_grab(path: PackedStringArray, is_new: bool) -> void:
 		"is_new": is_new,
 	}
 	selected = path
+	view.set_dragging(inst.id)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
@@ -725,6 +728,7 @@ func _update_grab() -> void:
 func _end_grab(commit: bool) -> void:
 	var g := _grab
 	_grab = {}
+	view.set_dragging("")
 	if commit:
 		project.end_step()
 	else:
