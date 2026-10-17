@@ -72,6 +72,7 @@ Table › Fork). Press **Ctrl+S** to save it to
 | `,` `.` | Shrink/grow yourself (0.05×–2×) for fine work |
 | Left / right / middle click | Break / place / pick colour |
 | 1–0, mouse wheel | Colour, brush size (1–100 cm) |
+| T | Toggle placing flush on the aimed surface (default) or snapped to the brush grid |
 | Q | Select the object under the crosshair; press again to walk up the tree |
 | Shift+Q | Walk back down toward the object under the crosshair |
 | Enter / Backspace | Edit the selected object / leave the current object |

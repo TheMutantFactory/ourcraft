@@ -24,6 +24,9 @@ var isolated := false
 var color := 1
 var brush_idx := 3
 var clipboard := ""
+## Place/break flush against the aimed surface (true) or snap to the brush
+## grid on all axes (false). T toggles.
+var on_surface := true
 
 var _aim := {}
 var _grab := {}
@@ -340,8 +343,19 @@ func _brush_target(place: bool) -> Array:
 		return []
 	var p: Vector3 = _aim.pos + _aim.normal * (_eps() if place else -_eps())
 	var b := _brush_cells(def)
-	var cell := _floor_div(_cell_at(edit_path, def, p), b) * b
-	return [cell, cell + Vector3i.ONE * b]
+	var hit := _cell_at(edit_path, def, p)
+	var lo := _floor_div(hit, b) * b
+	if on_surface:
+		# Along the surface normal, sit flush against the surface instead of
+		# snapping to the brush grid; across it, keep the grid so rows line up.
+		var n := _world_xform(edit_path).basis.inverse() * Vector3(_aim.normal)
+		var axis := n.abs().max_axis_index()
+		var outward := n[axis] > 0.0
+		if place == outward:
+			lo[axis] = hit[axis]
+		else:
+			lo[axis] = hit[axis] - b + 1
+	return [lo, lo + Vector3i.ONE * b]
 
 
 func _draw_overlay() -> void:
@@ -395,6 +409,7 @@ func _refresh_hud_dynamic() -> void:
 	var txt := "Brush %s" % _cm(got)
 	if got != want:
 		txt += " (object grid; N for finer)"
+	txt += "  ·  on surface" if on_surface else "  ·  grid"
 	txt += "   ·   You: %sx%s" % [Hud._fmt(player.size), "   ·   flying" if player.flying else ""]
 	hud.brush_label.text = txt
 	var pending := view.pending_chunks()
@@ -492,6 +507,9 @@ func _on_key(event: InputEventKey) -> void:
 				_run_command("rotate")
 		KEY_DELETE, KEY_X: _run_command("delete")
 		KEY_U: _run_command("unique")
+		KEY_T:
+			on_surface = not on_surface
+			hud.toast("Placing on the surface" if on_surface else "Placing on the brush grid")
 
 
 func _toggle_panel(on: bool) -> void:

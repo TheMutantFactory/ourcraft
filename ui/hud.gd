@@ -139,7 +139,8 @@ const HELP := """WASD move · Space jump · Shift sprint
 F fly (Space / Shift up and down)
 Left click break · Right click place
 Middle click pick colour · 1–0 colour
-Scroll brush size · , . shrink / grow yourself
+Scroll brush size · T surface / grid placing
+, . shrink / grow yourself
 Q select · Q again walk up · Shift+Q walk down
 Enter edit · Backspace leave · I isolate
 N new object · G move · R rotate · Del delete
