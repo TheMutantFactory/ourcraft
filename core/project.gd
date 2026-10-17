@@ -120,6 +120,8 @@ func fork_def(def_id: String) -> ObjectDef:
 	var def := create_def(unique_name(src.name + " copy"), src.unit)
 	def.grid = src.grid.copy()
 	def.forked_from = src.id
+	if not def.grid.is_empty():
+		voxels_changed.emit(def.id, def.grid.keys())
 	for inst in src.children:
 		var c: ObjectInstance = inst.copy()
 		c.id = new_id()
@@ -406,6 +408,32 @@ func set_instance_def(parent_id: String, inst_id: String, def_id: String) -> voi
 	_bounds_cache.clear()
 	structure_changed.emit()
 	library_changed.emit()
+
+
+## Moves an instance into a different object (keeping its id), placing it
+## at offset in the new parent's space. Refused if the new parent is the
+## instance's object or is inside it. Returns whether it moved.
+func reparent_instance(from_id: String, inst_id: String, to_id: String, offset: Vector3i, rot := -1) -> bool:
+	var from: ObjectDef = defs.get(from_id)
+	var to: ObjectDef = defs.get(to_id)
+	if from == null or to == null:
+		return false
+	var inst := from.find_child(inst_id)
+	if inst == null or would_cycle(to_id, inst.def_id):
+		return false
+	begin_step("Move into another object")
+	_record_children(from)
+	_record_children(to)
+	from.children.erase(inst)
+	inst.offset = offset
+	if rot >= 0:
+		inst.rot = posmod(rot, 4)
+	to.children.append(inst)
+	end_step()
+	_bounds_cache.clear()
+	structure_changed.emit()
+	library_changed.emit()
+	return true
 
 
 func can_undo() -> bool:

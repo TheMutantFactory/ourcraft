@@ -75,15 +75,30 @@ static func each_pixel(text: String, draw: Callable) -> void:
 					draw.call(x0 + c, HEIGHT - 1 - r)
 
 
+## Writes text lying flat on the ground (the XZ plane), one cell thick,
+## readable from above with -Z as "up": the top row of the letters is at
+## z = 0 and rows go towards +Z.
+static func write_flat(grid: VoxelGrid, text: String, color: int) -> void:
+	_write_cells(grid, text, color, func(x: int, y: int) -> Array:
+		return [Vector3i(x, 0, HEIGHT - 1 - y)])
+
+
 ## Writes text into a grid: letters in the XY plane starting at the origin,
 ## depth cells thick along +Z.
 static func write(grid: VoxelGrid, text: String, color: int, depth := 2) -> void:
-	# Build raw chunks first: one compression per chunk instead of one per
-	# pixel.
+	_write_cells(grid, text, color, func(x: int, y: int) -> Array:
+		var cells := []
+		for z in depth:
+			cells.append(Vector3i(x, y, z))
+		return cells)
+
+
+## Builds raw chunks first (one compression per chunk instead of one per
+## pixel); cells_of(x, y) maps a font pixel to the cells it fills.
+static func _write_cells(grid: VoxelGrid, text: String, color: int, cells_of: Callable) -> void:
 	var raw := {}
 	each_pixel(text, func(x: int, y: int) -> void:
-		for z in depth:
-			var p := Vector3i(x, y, z)
+		for p in cells_of.call(x, y):
 			var key := VoxelGrid.chunk_of(p)
 			var data: PackedByteArray = raw.get(key, PackedByteArray())
 			if data.is_empty():

@@ -97,6 +97,14 @@ func update(indices: Array) -> void:
 				list[s[1]].transform = t
 
 
+## Placement indices currently drawn, for consistency checks.
+func drawn_placements() -> Array:
+	var out := []
+	for g in _groups.values():
+		out.append_array(g.members)
+	return out
+
+
 func node_count() -> int:
 	var n := 0
 	for g in _groups.values():

@@ -7,6 +7,9 @@ shader_type spatial;
 // keeps one material per depth and sets it as each chunk's material
 // override, so instances keep sharing one mesh.
 uniform float layer = 0.0;
+// Baked region meshes mix depths in one surface and carry each vertex's
+// depth in UV.x instead.
+uniform bool layer_from_uv = false;
 // Fraction of the view distance each layer moves toward the camera.
 uniform float bias_per_layer = 0.00001;
 uniform float roughness_value = 0.88;
@@ -16,7 +19,8 @@ void vertex() {
 	// Godot 4.3+ uses reversed Z (near = 1, far = 0) with a float depth
 	// buffer, whose precision is relative; scaling z moves the face closer by
 	// a constant fraction of its distance.
-	POSITION.z *= 1.0 + layer * bias_per_layer;
+	float l = layer_from_uv ? UV.x : layer;
+	POSITION.z *= 1.0 + l * bias_per_layer;
 }
 
 vec3 srgb_to_linear(vec3 c) {
