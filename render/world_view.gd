@@ -5,14 +5,18 @@ extends Node3D
 ## cheap and an edit shows up in every copy at once.
 ##
 ## The instance tree is flattened into placements (one per rendered copy of
-## an object, with its world transform). InstanceRenderer draws them with
-## MultiMeshes and CollisionField gives the ones near the player physics
-## bodies; no nodes are created per instance.
+## an object, with its world transform); no nodes are created per instance.
+## Live placements (the object being edited, anything dragged, and objects
+## with many copies) are drawn by InstanceRenderer with shared meshes;
+## everything else is merged into region meshes by RegionBaker.
+## CollisionField gives placements near the player physics bodies.
 
 ## Main-thread time per frame for uploading meshes from worker jobs.
 const UPLOAD_BUDGET_USEC := 4000
 ## Main-thread time per frame for meshing inline with the native mesher.
 const INLINE_BUDGET_USEC := 8000
+## Main-thread time per frame for rebaking regions (at least one per frame).
+const BAKE_BUDGET_USEC := 6000
 
 var project: Project
 var material: ShaderMaterial
@@ -34,7 +38,11 @@ var collision: CollisionField
 ## Array of {path, def_id, depth, xform (metres), cell_m}
 var _placements: Array = []
 var _renderer: InstanceRenderer
-var _isolated = null # PackedStringArray or null
+var _baker: RegionBaker
+var _isolated = null
+## The object being edited and the instance being dragged stay live.
+var _edit_def_id := ""
+var _drag_inst := "" # PackedStringArray or null
 var _tree_dirty := false
 
 
@@ -46,6 +54,10 @@ func _ready() -> void:
 	_renderer = InstanceRenderer.new()
 	_renderer.material_for_depth = _material_for_depth
 	add_child(_renderer)
+	_baker = RegionBaker.new()
+	_baker.material_for_depth = _material_for_depth
+	_baker.bounds_of = _chunk_bounds
+	add_child(_baker)
 
 
 func _exit_tree() -> void:
@@ -67,20 +79,24 @@ func set_project(p: Project) -> void:
 func remesh_all() -> void:
 	if collision != null:
 		collision.clear()
+	if _baker != null:
+		_baker.clear()
 	_meshes.clear()
 	_dirty.clear()
 	_generation += 1
 	for def in project.defs.values():
 		for key in def.grid.chunks:
 			_dirty.get_or_add(def.id, {})[key] = true
-	rebuild_tree()
+	# Rebuilt on the next frame (or flush), after callers set the edit
+	# context, so render modes are only computed once.
+	_tree_dirty = true
 
 
 func pending_chunks() -> int:
 	var n := 0
 	for d in _dirty.values():
 		n += d.size()
-	return n + _jobs.size()
+	return n + _jobs.size() + (_baker.pending() if _baker != null else 0)
 
 
 func _on_voxels_changed(def_id: String, keys: Array) -> void:
@@ -107,6 +123,9 @@ func _process(_delta: float) -> void:
 	else:
 		_collect_jobs(UPLOAD_BUDGET_USEC)
 		_dispatch_jobs()
+	# Bake once meshing has caught up, so regions aren't rebuilt per chunk.
+	if _dirty.is_empty() and _jobs.is_empty():
+		_baker.process(_meshes, BAKE_BUDGET_USEC)
 
 
 ## With the native mesher a chunk takes ~20 µs, so meshing on the main
@@ -186,10 +205,11 @@ func flush() -> void:
 		rebuild_tree()
 	if Native.available():
 		_mesh_inline(0)
-		return
-	while not _jobs.is_empty() or not _dirty.is_empty():
-		_dispatch_jobs()
-		_collect_jobs(0)
+	else:
+		while not _jobs.is_empty() or not _dirty.is_empty():
+			_dispatch_jobs()
+			_collect_jobs(0)
+	_baker.process(_meshes, 0)
 
 
 func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
@@ -203,6 +223,7 @@ func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 			entries.erase(key)
 			_renderer.chunk_removed(def_id, key)
 			collision.update_def(def_id)
+			_baker.def_changed(def_id)
 		return
 	var entry = entries.get(key)
 	var fresh: bool = entry == null
@@ -213,8 +234,14 @@ func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 	var mesh: ArrayMesh = entry.mesh
 	mesh.clear_surfaces()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, built.arrays)
+	# Keep a CPU copy only for objects that are baked into regions.
+	if _baker.has_def(def_id):
+		entry.arrays = built.arrays
+	else:
+		entry.erase("arrays")
 	mesh.surface_set_material(0, material)
 	entry.shape.set_faces(built.faces)
+	_baker.def_changed(def_id)
 	if fresh:
 		_renderer.chunk_added(def_id, key, mesh)
 		collision.update_def(def_id)
@@ -321,8 +348,55 @@ func set_isolation(path) -> void:
 	_apply_isolation()
 
 
+## Sets which object is being edited; it stays live (never baked) so
+## edits show immediately in every copy.
+func set_edit_def(def_id: String) -> void:
+	if def_id == _edit_def_id:
+		return
+	_edit_def_id = def_id
+	_apply_render_modes()
+
+
+## Keeps an instance (and everything in it) live while it's dragged; "" ends.
+func set_dragging(inst_id: String) -> void:
+	if inst_id == _drag_inst:
+		return
+	_drag_inst = inst_id
+	_apply_render_modes()
+
+
+func baked_region_count() -> int:
+	return _baker.region_count()
+
+
 func _apply_isolation() -> void:
-	_renderer.set_placements(_placements, _is_visible, _meshes)
+	_apply_render_modes()
+
+
+## Splits visible placements between live instancing and baked regions.
+func _apply_render_modes() -> void:
+	if _renderer == null or project == null or _tree_dirty:
+		return
+	var copies := {}
+	for i in _placements.size():
+		if _is_visible(i):
+			var pl: Dictionary = _placements[i]
+			var gk := "%s|%d" % [pl.def_id, pl.depth]
+			copies[gk] = int(copies.get(gk, 0)) + 1
+	var dragged := {}
+	if _drag_inst != "":
+		for i in collision.placements_under(_drag_inst):
+			dragged[i] = true
+	var live := {}
+	for i in _placements.size():
+		if not _is_visible(i):
+			continue
+		var pl: Dictionary = _placements[i]
+		if pl.def_id == _edit_def_id or dragged.has(i) \
+				or copies["%s|%d" % [pl.def_id, pl.depth]] >= InstanceRenderer.MULTIMESH_MIN:
+			live[i] = true
+	_renderer.set_placements(_placements, func(i): return live.has(i), _meshes)
+	_baker.set_placements(_placements, func(i): return _is_visible(i) and not live.has(i))
 
 
 func _is_visible(i: int) -> bool:
