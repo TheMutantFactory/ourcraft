@@ -47,7 +47,8 @@ scripts retry it automatically, and later runs are unaffected.
 
 The first launch builds a demo street (World › Street › House › Kitchen ›
 Table › Fork). Press **Ctrl+S** to save it to
-`user://projects/default.ourcraft/`. Once saved, later launches load it.
+`user://projects/default.ourcraft/`. Once saved, later launches load it. The
+folder layout is described in [docs/file-format.md](docs/file-format.md).
 
 ## Concepts
 

@@ -34,14 +34,57 @@ func copy_children() -> Array:
 	return out
 
 
-func to_dict() -> Dictionary:
+## Metadata for objects.json: everything but the voxel bytes, which live in
+## the chunk pack. chunk_refs is [[key, hash, count], ...] sorted by key.
+func to_meta(chunk_refs: Array) -> Dictionary:
+	var chunk_list := []
+	for r in chunk_refs:
+		chunk_list.append({"key": [r[0].x, r[0].y, r[0].z], "hash": r[1], "count": r[2]})
+	var child_list := []
+	for inst in children:
+		child_list.append(inst.to_dict())
+	var d := {"id": id, "name": name, "unit": unit, "chunks": chunk_list, "children": child_list}
+	if forked_from != "":
+		d["forked_from"] = forked_from
+	return d
+
+
+## Builds an object from objects.json metadata and a loaded chunk pack.
+## Returns [def, hashes] where hashes lists its chunk hashes in key order.
+static func from_meta(d: Dictionary, pack: Dictionary) -> Array:
+	var def := ObjectDef.new()
+	def.id = str(d["id"])
+	def.name = str(d.get("name", "Object"))
+	def.unit = maxi(1, int(d.get("unit", 1)))
+	def.forked_from = str(d.get("forked_from", ""))
+	var hashes := []
+	for c in d.get("chunks", []):
+		var k: Array = c["key"]
+		var h := str(c["hash"])
+		var packed = pack.get(h)
+		if packed == null:
+			push_error("Object %s is missing chunk %s" % [def.id, h])
+			continue
+		def.grid.set_packed_trusted(Vector3i(int(k[0]), int(k[1]), int(k[2])), packed, int(c.get("count", 0)))
+		hashes.append(h)
+	for c in d.get("children", []):
+		def.children.append(ObjectInstance.from_dict(c))
+	return [def, hashes]
+
+
+## Sorted chunk keys (z, then y, then x) for deterministic files.
+func sorted_keys() -> Array:
 	var keys := grid.keys()
 	keys.sort_custom(func(a: Vector3i, b: Vector3i) -> bool:
 		if a.z != b.z: return a.z < b.z
 		if a.y != b.y: return a.y < b.y
 		return a.x < b.x)
+	return keys
+
+
+func to_dict() -> Dictionary:
 	var chunk_list := []
-	for key in keys:
+	for key in sorted_keys():
 		chunk_list.append({
 			"key": [key.x, key.y, key.z],
 			"data": Marshalls.raw_to_base64(grid.get_packed(key)),

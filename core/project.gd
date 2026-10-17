@@ -11,7 +11,10 @@ signal structure_changed
 signal library_changed
 
 const FORMAT := "ourcraft.project"
-const VERSION := 1
+## 1: objects/<id>.json per object. 2: objects.json plus a chunk pack.
+const VERSION := 2
+const OBJECTS_FILE := "objects.json"
+
 const MAX_DEPTH := 32
 const MAX_HISTORY := 200
 
@@ -45,8 +48,17 @@ var _bounds_cache: Dictionary = {}
 var _saved_path := ""
 var _clean: Dictionary = {}
 var _removed_since_save := false
-## Number of object files the last save_dir wrote (for tests and tools).
+## Number of objects whose entry the last save_dir regenerated.
 var last_save_written := 0
+## id -> that object's one-line entry in objects.json (valid while clean)
+var _meta_text: Dictionary = {}
+## id -> its chunk hashes in key order (valid while clean)
+var _def_hashes: Dictionary = {}
+## Current chunk pack file name and hash -> entry size of what it holds.
+var _pack_name := ""
+var _pack_sizes: Dictionary = {}
+## Compact the chunk pack when unreferenced bytes exceed live ones and this.
+var compact_min_garbage := 65536
 
 
 static func create_empty(voxel_size_m: float) -> Project:
@@ -448,8 +460,6 @@ func _apply(step: Dictionary) -> Dictionary:
 # --- Persistence -----------------------------------------------------------
 
 func manifest() -> Dictionary:
-	var ids := defs.keys()
-	ids.sort()
 	var pal := []
 	for c in palette:
 		pal.append(c.to_html(false))
@@ -461,50 +471,154 @@ func manifest() -> Dictionary:
 		"units": {"min_block_m": voxel_size, "up": "+y", "handedness": "right"},
 		"root": root_id,
 		"palette": pal,
-		"objects": ids,
+		"objects_file": OBJECTS_FILE,
 	}
 
 
-## Saves as a directory: manifest.json plus objects/<id>.json. Saving again
-## to the same directory only rewrites objects that changed. Objects are
-## written before the manifest, so an interrupted save leaves the previous
-## manifest pointing at complete files.
+## Saves as a directory: manifest.json, objects.json (one line per object)
+## and a content-addressed chunk pack (see docs/file-format.md). Saving again
+## to the same directory regenerates only changed objects' entries and
+## appends only new chunks. objects.json names its pack and is replaced
+## atomically, so it is the commit point of a save.
 func save_dir(path: String) -> Error:
-	var obj_dir := path.path_join("objects")
-	var err := DirAccess.make_dir_recursive_absolute(obj_dir)
+	var err := DirAccess.make_dir_recursive_absolute(path)
 	if err != OK:
 		return err
-	var full := path != _saved_path
+	var full := path != _saved_path or _pack_name == ""
 	if full:
 		_clean.clear()
+		_meta_text.clear()
+		_def_hashes.clear()
+		_pack_sizes.clear()
+		_pack_name = _next_pack_name(path)
 	last_save_written = 0
-	for def in defs.values():
-		if _clean.has(def.id):
+	var ids := defs.keys()
+	ids.sort()
+	var new_chunks := {}
+	for id in ids:
+		if _clean.has(id) and _meta_text.has(id):
 			continue
-		err = _write_json(obj_dir.path_join(def.id + ".json"), def.to_dict())
-		if err != OK:
-			return err
-		_clean[def.id] = true
+		var def: ObjectDef = defs[id]
+		var refs := []
+		var hashes := []
+		for key in def.sorted_keys():
+			var packed: PackedByteArray = def.grid.get_packed(key)
+			var h := ChunkPack.hash_of(packed)
+			refs.append([key, h, def.grid.counts[key]])
+			hashes.append(h)
+			if not _pack_sizes.has(h):
+				new_chunks[h] = packed
+		_def_hashes[id] = hashes
+		_meta_text[id] = JSON.stringify(def.to_meta(refs), "", true)
 		last_save_written += 1
+	for id in _meta_text.keys():
+		if not defs.has(id):
+			_meta_text.erase(id)
+			_def_hashes.erase(id)
+
+	var old_pack := ""
+	var pack_path := path.path_join(_pack_name)
+	if full:
+		err = ChunkPack.write(pack_path, new_chunks)
+		_pack_sizes = _sizes_of(new_chunks)
+	elif _garbage_exceeds_live():
+		old_pack = _pack_name
+		_pack_name = _next_pack_name(path)
+		pack_path = path.path_join(_pack_name)
+		var live := _live_chunks()
+		err = ChunkPack.write(pack_path, live)
+		_pack_sizes = _sizes_of(live)
+	else:
+		err = ChunkPack.append(pack_path, new_chunks)
+		_pack_sizes.merge(_sizes_of(new_chunks))
+	if err != OK:
+		return err
+
+	var lines := PackedStringArray()
+	for id in ids:
+		lines.append(_meta_text[id])
+	var header := JSON.stringify({"format": "ourcraft.objects", "version": 1, "chunks_file": _pack_name}, "", true)
+	err = _write_text(path.path_join(OBJECTS_FILE),
+		header.trim_suffix("}") + ', "objects": [\n' + ",\n".join(lines) + "\n]}\n")
+	if err != OK:
+		return err
 	err = _write_json(path.path_join("manifest.json"), manifest())
 	if err != OK:
 		return err
-	if full or _removed_since_save:
-		var dir := DirAccess.open(obj_dir)
-		if dir != null:
-			for f in dir.get_files():
-				if f.ends_with(".json") and not defs.has(f.get_basename()):
-					dir.remove(f)
+	if old_pack != "":
+		DirAccess.remove_absolute(path.path_join(old_pack))
+	if full:
+		_remove_stale_files(path)
+	for id in ids:
+		_clean[id] = true
 	_saved_path = path
 	_removed_since_save = false
 	return OK
+
+
+func _garbage_exceeds_live() -> bool:
+	var live := {}
+	for hashes in _def_hashes.values():
+		for h in hashes:
+			live[h] = true
+	var live_bytes := 0
+	var garbage := 0
+	for h in _pack_sizes:
+		if live.has(h):
+			live_bytes += _pack_sizes[h]
+		else:
+			garbage += _pack_sizes[h]
+	return garbage > live_bytes and garbage > compact_min_garbage
+
+
+## hash -> compressed bytes for every chunk referenced by an object.
+func _live_chunks() -> Dictionary:
+	var out := {}
+	for id in _def_hashes:
+		var def: ObjectDef = defs[id]
+		var keys := def.sorted_keys()
+		var hashes: Array = _def_hashes[id]
+		for k in keys.size():
+			out[hashes[k]] = def.grid.get_packed(keys[k])
+	return out
+
+
+static func _sizes_of(chunks: Dictionary) -> Dictionary:
+	var out := {}
+	for h in chunks:
+		out[h] = ChunkPack.entry_size(chunks[h])
+	return out
+
+
+## A chunk pack name not used in the folder yet, so writing a new pack never
+## touches the one the current objects.json refers to.
+static func _next_pack_name(path: String) -> String:
+	var n := 0
+	for f in DirAccess.get_files_at(path):
+		if f.begins_with("chunks-") and f.ends_with(".pack"):
+			n = maxi(n, f.trim_prefix("chunks-").trim_suffix(".pack").to_int())
+	return "chunks-%d.pack" % (n + 1)
+
+
+## After a full save: older packs, temp files and version 1 object files.
+func _remove_stale_files(path: String) -> void:
+	for f in DirAccess.get_files_at(path):
+		if (f.begins_with("chunks-") and f.ends_with(".pack") and f != _pack_name) or f.ends_with(".tmp"):
+			DirAccess.remove_absolute(path.path_join(f))
+	var legacy := path.path_join("objects")
+	if DirAccess.dir_exists_absolute(legacy):
+		for f in DirAccess.get_files_at(legacy):
+			if f.ends_with(".json") or f.ends_with(".tmp"):
+				DirAccess.remove_absolute(legacy.path_join(f))
+		DirAccess.remove_absolute(legacy)
 
 
 static func load_dir(path: String) -> Project:
 	var m = _read_json(path.path_join("manifest.json"))
 	if not (m is Dictionary) or m.get("format") != FORMAT:
 		return null
-	if int(m.get("version", 0)) > VERSION:
+	var version := int(m.get("version", 0))
+	if version > VERSION:
 		push_error("Project was saved by a newer Ourcraft")
 		return null
 	var p := Project.new()
@@ -515,25 +629,86 @@ static func load_dir(path: String) -> Project:
 		p.palette = []
 		for h in pal:
 			p.palette.append(Color(str(h)))
+	p.root_id = str(m.get("root", ""))
+	var ok := p._load_objects_v2(path) if version >= 2 else p._load_objects_v1(path, m)
+	if not ok or not p.defs.has(p.root_id):
+		return null
+	var changed := p._drop_dangling()
+	if version >= 2:
+		p._saved_path = path
+		for id in p.defs:
+			if not changed.has(id) and p._meta_text.has(id):
+				p._clean[id] = true
+	return p
+
+
+## Version 1: one JSON file per object. The next save converts the folder.
+func _load_objects_v1(path: String, m: Dictionary) -> bool:
 	for id in m.get("objects", []):
 		var d = _read_json(path.path_join("objects").path_join(str(id) + ".json"))
 		if d is Dictionary:
 			var def := ObjectDef.from_dict(d)
-			p.defs[def.id] = def
-	p.root_id = str(m.get("root", ""))
-	if not p.defs.has(p.root_id):
-		return null
-	p._drop_dangling()
-	p._saved_path = path
-	for id in p.defs:
-		p._clean[id] = true
-	return p
+			defs[def.id] = def
+	return true
 
 
-## Removes instances that reference missing objects.
-func _drop_dangling() -> void:
+## Version 2: objects.json plus the chunk pack it names. Entries are read
+## one line at a time so each object's text can be reused by the next save;
+## a hand-edited (reformatted) file is parsed as a whole instead.
+func _load_objects_v2(path: String) -> bool:
+	var text := FileAccess.get_file_as_string(path.path_join(OBJECTS_FILE))
+	if text == "":
+		return false
+	var lines := text.split("\n", false)
+	var header = null
+	var entries := []
+	var texts := []
+	if lines.size() >= 2 and lines[0].ends_with("[") and lines[-1] == "]}":
+		header = JSON.parse_string(lines[0] + "]}")
+		for k in range(1, lines.size() - 1):
+			var line := lines[k].trim_suffix(",")
+			var e = JSON.parse_string(line)
+			if not (e is Dictionary):
+				header = null
+				break
+			entries.append(e)
+			texts.append(line)
+	if not (header is Dictionary):
+		var whole = JSON.parse_string(text)
+		if not (whole is Dictionary):
+			return false
+		header = whole
+		entries = whole.get("objects", [])
+		texts = []
+	_pack_name = str(header.get("chunks_file", ""))
+	var pack = ChunkPack.read(path.path_join(_pack_name))
+	if pack == null:
+		push_error("Missing or unreadable chunk pack %s" % _pack_name)
+		pack = {}
+	_pack_sizes = _sizes_of(pack)
+	for k in entries.size():
+		var e: Dictionary = entries[k]
+		var made := ObjectDef.from_meta(e, pack)
+		var def: ObjectDef = made[0]
+		defs[def.id] = def
+		_def_hashes[def.id] = made[1]
+		# Keep the entry text only if every chunk loaded, so a damaged object
+		# gets rewritten from what was recovered.
+		if k < texts.size() and made[1].size() == e.get("chunks", []).size():
+			_meta_text[def.id] = texts[k]
+	return true
+
+
+## Removes instances that reference missing objects; returns the ids of
+## objects whose child lists changed.
+func _drop_dangling() -> Dictionary:
+	var changed := {}
 	for def in defs.values():
-		def.children = def.children.filter(func(i): return defs.has(i.def_id))
+		var kept: Array = def.children.filter(func(i): return defs.has(i.def_id))
+		if kept.size() != def.children.size():
+			def.children = kept
+			changed[def.id] = true
+	return changed
 
 
 ## Collects an object and all objects nested in it.
@@ -582,17 +757,20 @@ func import_bundle(file_path: String) -> String:
 	return root_obj if defs.has(root_obj) else ""
 
 
-## Writes JSON, replacing an existing file atomically (write a temp file,
-## then rename) so an interrupted save never leaves a half-written file. New
-## files are written in place: there's no earlier version to protect, and
-## the manifest isn't updated to reference them until they're complete.
 static func _write_json(file_path: String, data) -> Error:
+	return _write_text(file_path, JSON.stringify(data, "  ", true))
+
+
+## Writes text, replacing an existing file atomically (write a temp file,
+## then rename) so an interrupted save never leaves a half-written file. New
+## files are written in place: there's no earlier version to protect.
+static func _write_text(file_path: String, text: String) -> Error:
 	var exists := FileAccess.file_exists(file_path)
 	var target := file_path + ".tmp" if exists else file_path
 	var f := FileAccess.open(target, FileAccess.WRITE)
 	if f == null:
 		return FileAccess.get_open_error()
-	f.store_string(JSON.stringify(data, "  ", true))
+	f.store_string(text)
 	f.close()
 	if not exists:
 		return OK
