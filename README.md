@@ -65,7 +65,8 @@ tools/wordnet-world.sh
 tools/run.sh --project=user://projects/wordnet.ourcraft
 ```
 
-Sources are listed in [docs/bibliography.md](docs/bibliography.md).
+Sources are listed in [docs/bibliography.md](docs/bibliography.md). For the
+synthetic tree world and the tree fuzzer, see [docs/testing.md](docs/testing.md).
 
 ## Concepts
 
@@ -97,6 +98,7 @@ Sources are listed in [docs/bibliography.md](docs/bibliography.md).
 | Shift+Q | Walk back down toward the object under the crosshair |
 | Enter / Backspace | Edit the selected object / leave the current object |
 | I | Isolate the object being edited |
+| L | Show the object tree as relationship lines |
 | N | New object at the crosshair (block size = current brush) |
 | G, R, Del | Move, rotate 90°, delete the selected instance |
 | Ctrl+C / Ctrl+V / Ctrl+D | Copy, paste an instance, duplicate |
@@ -114,5 +116,5 @@ Sources are listed in [docs/bibliography.md](docs/bibliography.md).
 - `game/`: player controller and input handling
 - `ui/`: HUD and side panel
 - `tests/`: headless core tests
-- `tools/`: run, test, editor, native build, stress and WordNet world scripts
+- `tools/`: run, test, fuzz, editor, native build, stress and test-world scripts (see [docs/testing.md](docs/testing.md))
 - `native/`: C++ GDExtension for voxel fill and meshing (godot-cpp is a submodule)

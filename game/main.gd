@@ -17,6 +17,7 @@ var view: WorldView
 var player: Player
 var hud: Hud
 var overlay: Overlay
+var tree_lines: TreeLines
 
 var edit_path := PackedStringArray()
 var selected = null # PackedStringArray or null
@@ -43,6 +44,8 @@ func _ready() -> void:
 	add_child(view)
 	overlay = Overlay.new()
 	add_child(overlay)
+	tree_lines = TreeLines.new()
+	add_child(tree_lines)
 	player = Player.new()
 	add_child(player)
 	hud = Hud.new()
@@ -93,6 +96,7 @@ func _run_debug_args() -> void:
 		view.material.set_shader_parameter("bias_per_layer", 0.0)
 		for m in view._depth_materials:
 			m.set_shader_parameter("bias_per_layer", 0.0)
+		view._baker.material.set_shader_parameter("bias_per_layer", 0.0)
 	if args.has("pose"):
 		var v := str(args.pose).split_floats(",")
 		player.global_position = Vector3(v[0], v[1], v[2])
@@ -101,7 +105,7 @@ func _run_debug_args() -> void:
 	if args.has("size"):
 		player.set_size(float(args.size))
 	if args.has("goto"):
-		_goto(str(args.goto).replace("_", " "))
+		_goto(str(args.goto).replace("_", " "), float(args.get("zoom", "1")))
 	if args.has("fly"):
 		player.flying = true
 	if args.has("shot"):
@@ -121,6 +125,22 @@ func _run_debug_args() -> void:
 			for i in 30:
 				player.look(Vector2(-6, 0))
 				await get_tree().physics_frame
+		if args.has("churn"):
+			# Stress: edit instanced (MultiMesh-drawn) objects every frame.
+			var rng := RandomNumberGenerator.new()
+			rng.seed = int(args.churn) if str(args.churn).is_valid_int() else 1
+			var live: Array = view._live_defs.keys().filter(func(id): return id != project.root_id)
+			for i in 400:
+				if live.is_empty():
+					break
+				var id: String = live[rng.randi_range(0, live.size() - 1)]
+				var a := Vector3i(rng.randi_range(0, 60), 0, rng.randi_range(0, 14))
+				project.edit_box(id, a, a + Vector3i(rng.randi_range(1, 6), 1, rng.randi_range(1, 6)), rng.randi_range(0, 9))
+				await get_tree().process_frame
+			print("churn done")
+		if args.has("lines"):
+			tree_lines.visible = true
+			tree_lines.mark_dirty()
 		if args.has("help"):
 			hud.toggle_help()
 		if args.has("panel"):
@@ -142,7 +162,7 @@ func _run_debug_args() -> void:
 			print("place+mesh ms=%d" % (Time.get_ticks_msec() - t0))
 		for i in int(args.get("wait", "20")):
 			await get_tree().process_frame
-		print("fps=%d chunks_pending=%d player_y=%.3f bodies=%d regions=%d render_nodes=%d" % [Engine.get_frames_per_second(), view.pending_chunks(), player.global_position.y, view.collision.active_count(), view.baked_region_count(), view.render_node_count()])
+		print("fps=%d chunks_pending=%d player_y=%.3f bodies=%d regions=%d render_nodes=%d placements=%d live=%d" % [Engine.get_frames_per_second(), view.pending_chunks(), player.global_position.y, view.collision.active_count(), view.baked_region_count(), view.render_node_count(), view._placements.size(), view._renderer.drawn_placements().size()])
 		get_viewport().get_texture().get_image().save_png(str(args.shot))
 		get_tree().quit()
 
@@ -167,7 +187,7 @@ func set_ui_scale(value: float) -> void:
 
 ## Development hook: puts the camera in front of the first copy of the
 ## object with this name, looking at its word.
-func _goto(name: String) -> void:
+func _goto(name: String, zoom := 1.0) -> void:
 	var path = _find_path(project.root(), name, PackedStringArray(), 0)
 	if path == null:
 		hud.toast("No object named %s" % name)
@@ -176,11 +196,16 @@ func _goto(name: String) -> void:
 	var xf := _world_xform(path)
 	var own := def.grid.bounds()
 	var box := xf * AABB(own.position * def.unit, own.size * def.unit)
-	var dist := maxf(box.size.x, box.size.y) * 1.2 + 0.3
+	var dist := (maxf(box.size.x, maxf(box.size.y, box.size.z)) * 1.2 + 0.3) * zoom
 	player.flying = true
-	player.global_position = box.get_center() + Vector3(0, -Player.EYE * player.size, dist)
 	player.rotation = Vector3.ZERO
-	player.look(Vector2.ZERO)
+	if box.size.y < box.size.z:
+		# Flat on the ground: look down at it from above and behind.
+		player.global_position = box.get_center() + Vector3(0, dist - Player.EYE * player.size, dist * 0.6)
+		player.look(Vector2(0, deg_to_rad(55) / player.mouse_sensitivity))
+	else:
+		player.global_position = box.get_center() + Vector3(0, -Player.EYE * player.size, dist)
+		player.look(Vector2.ZERO)
 
 
 func _find_path(def: ObjectDef, name: String, path: PackedStringArray, depth: int):
@@ -253,6 +278,8 @@ func _use_project(p: Project) -> void:
 	project = p
 	project.structure_changed.connect(_mark_outline)
 	project.library_changed.connect(_mark_outline)
+	project.voxels_changed.connect(func(_id, _keys): tree_lines.mark_dirty())
+	tree_lines.mark_dirty()
 	edit_path = PackedStringArray()
 	selected = null
 	isolated = false
@@ -325,6 +352,7 @@ func _process(_delta: float) -> void:
 		hud.refresh_library(project)
 		_outline_dirty = false
 	_draw_overlay()
+	tree_lines.update_from(view, project)
 	_refresh_hud_dynamic()
 
 
@@ -525,6 +553,10 @@ func _on_key(event: InputEventKey) -> void:
 				_run_command("rotate")
 		KEY_DELETE, KEY_X: _run_command("delete")
 		KEY_U: _run_command("unique")
+		KEY_L:
+			tree_lines.visible = not tree_lines.visible
+			tree_lines.mark_dirty()
+			hud.toast("Relationship lines on" if tree_lines.visible else "Relationship lines off")
 		KEY_T:
 			on_surface = not on_surface
 			hud.toast("Placing on the surface" if on_surface else "Placing on the brush grid")

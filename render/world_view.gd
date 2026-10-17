@@ -18,6 +18,12 @@ extends Node3D
 const UPLOAD_BUDGET_USEC := 4000
 ## Main-thread time per frame for meshing inline with the native mesher.
 const INLINE_BUDGET_USEC := 8000
+## Objects with at least this many copies (at one tree depth) are drawn
+## with GPU instancing rather than baked. Each instanced group costs its own
+## draw calls, so it only pays off for many copies: a synthetic tree with
+## thousands of objects of 4–20 copies each ran at 19 fps with a threshold
+## of 4.
+const INSTANCE_MIN := 64
 ## Main-thread time per frame for rebaking regions (at least one per frame).
 const BAKE_BUDGET_USEC := 6000
 
@@ -62,7 +68,9 @@ func _ready() -> void:
 	_renderer.material_for_depth = _material_for_depth
 	add_child(_renderer)
 	_baker = RegionBaker.new()
-	_baker.material_for_depth = _material_for_depth
+	var baked_material: ShaderMaterial = material.duplicate()
+	baked_material.set_shader_parameter("layer_from_uv", true)
+	_baker.material = baked_material
 	_baker.bounds_of = _chunk_bounds
 	_baker.arrays_for = _arrays_for
 	collision.shape_for = _shape_for
@@ -365,6 +373,24 @@ func rebuild_tree() -> void:
 	_tree_dirty = false
 	_placements = []
 	_collect(project.root_id, PackedStringArray(), Transform3D.IDENTITY, 0)
+	# Objects whose voxels arrived without a voxels_changed signal (imported
+	# bundles, objects built before the view saw them) still need meshing:
+	# queue any chunk without an entry. A processed object has one entry per
+	# chunk, so the size check skips the per-chunk look in the usual case.
+	var checked := {}
+	for pl in _placements:
+		if checked.has(pl.def_id):
+			continue
+		checked[pl.def_id] = true
+		var def: ObjectDef = project.defs.get(pl.def_id)
+		if def == null:
+			continue
+		var entries: Dictionary = _meshes.get(def.id, {})
+		if entries.size() == def.grid.chunk_count():
+			continue
+		for key in def.grid.keys():
+			if not entries.has(key):
+				_dirty.get_or_add(def.id, {})[key] = true
 	collision.set_placements(_placements, _chunk_bounds)
 	_apply_isolation()
 
@@ -500,7 +526,7 @@ func _apply_render_modes() -> void:
 			continue
 		var pl: Dictionary = _placements[i]
 		if pl.def_id == _edit_def_id or dragged.has(i) \
-				or copies["%s|%d" % [pl.def_id, pl.depth]] >= InstanceRenderer.MULTIMESH_MIN:
+				or copies["%s|%d" % [pl.def_id, pl.depth]] >= INSTANCE_MIN:
 			live[i] = true
 			live_defs[pl.def_id] = true
 	_update_live_meshes(live_defs)

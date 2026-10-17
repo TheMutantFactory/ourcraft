@@ -2,8 +2,9 @@ class_name RegionBaker
 extends Node3D
 ## Merges placements that aren't being edited into one mesh per region of
 ## space ("baking"), so a street of unique objects costs a handful of draw
-## calls instead of one per object chunk. Each region mesh has one surface
-## per tree depth so deeper objects still win where faces are coplanar.
+## calls instead of one per object chunk. Each region is a single surface;
+## every vertex carries its tree depth in UV.x so deeper objects still win
+## where faces are coplanar.
 ##
 ## Baked copies don't share memory with their object, and a region must be
 ## rebaked when anything in it changes; WorldView keeps the object being
@@ -12,8 +13,8 @@ extends Node3D
 ## Region edge length in metres.
 const REGION := 8.0
 
-## Returns the ShaderMaterial for a tree depth.
-var material_for_depth: Callable
+## The material for baked meshes (reads the depth from UV.x).
+var material: Material
 ## Returns a definition's chunk bounds in local metres.
 var bounds_of: Callable
 ## Returns mesh arrays for (def_id, chunk key), or null if nothing visible.
@@ -69,6 +70,14 @@ func def_changed(def_id: String) -> void:
 		_dirty[key] = true
 
 
+## Placement indices currently baked, for consistency checks.
+func baked_placements() -> Array:
+	var out := []
+	for r in _regions.values():
+		out.append_array(r.members)
+	return out
+
+
 func pending() -> int:
 	return _dirty.size()
 
@@ -109,8 +118,11 @@ func _bake(key: Vector3i, meshes: Dictionary) -> void:
 	var r: Dictionary = _regions.get(key, {})
 	if r.is_empty():
 		return
-	# depth -> [verts, normals, colors, indices]
-	var parts := {}
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var colors := PackedColorArray()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
 	# Objects appear several times in a region; mesh each chunk once.
 	var cache := {}
 	for i in r.members:
@@ -118,12 +130,9 @@ func _bake(key: Vector3i, meshes: Dictionary) -> void:
 		var entries: Dictionary = meshes.get(pl.def_id, {})
 		if entries.is_empty():
 			continue
-		var part: Array = parts.get(pl.depth, [])
-		if part.is_empty():
-			part = [PackedVector3Array(), PackedVector3Array(), PackedColorArray(), PackedInt32Array()]
-			parts[pl.depth] = part
 		var xform: Transform3D = pl.xform
 		var rot := Transform3D(xform.basis, Vector3.ZERO)
+		var depth_uv := Vector2(pl.depth, 0)
 		for chunk_key in entries:
 			var ck := "%s|%s" % [pl.def_id, chunk_key]
 			if not cache.has(ck):
@@ -131,30 +140,32 @@ func _bake(key: Vector3i, meshes: Dictionary) -> void:
 			if cache[ck] == null:
 				continue
 			var arrays: Array = cache[ck]
-			var base: int = part[0].size()
+			var base := verts.size()
+			var src: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 			# Transform3D * PackedVector3Array runs natively.
-			part[0].append_array(xform * (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array))
-			part[1].append_array(rot * (arrays[Mesh.ARRAY_NORMAL] as PackedVector3Array))
-			part[2].append_array(arrays[Mesh.ARRAY_COLOR])
+			verts.append_array(xform * src)
+			normals.append_array(rot * (arrays[Mesh.ARRAY_NORMAL] as PackedVector3Array))
+			colors.append_array(arrays[Mesh.ARRAY_COLOR])
+			var depth_fill := PackedVector2Array()
+			depth_fill.resize(src.size())
+			depth_fill.fill(depth_uv)
+			uvs.append_array(depth_fill)
 			var idx: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
-			var out: PackedInt32Array = part[3]
-			var start := out.size()
-			out.resize(start + idx.size())
+			var start := indices.size()
+			indices.resize(start + idx.size())
 			for k in idx.size():
-				out[start + k] = idx[k] + base
+				indices[start + k] = idx[k] + base
 	var mesh := ArrayMesh.new()
-	var depths := parts.keys()
-	depths.sort()
-	for depth in depths:
-		var part: Array = parts[depth]
-		var arrays := []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = part[0]
-		arrays[Mesh.ARRAY_NORMAL] = part[1]
-		arrays[Mesh.ARRAY_COLOR] = part[2]
-		arrays[Mesh.ARRAY_INDEX] = part[3]
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, material_for_depth.call(depth))
+	if not indices.is_empty():
+		var out := []
+		out.resize(Mesh.ARRAY_MAX)
+		out[Mesh.ARRAY_VERTEX] = verts
+		out[Mesh.ARRAY_NORMAL] = normals
+		out[Mesh.ARRAY_COLOR] = colors
+		out[Mesh.ARRAY_TEX_UV] = uvs
+		out[Mesh.ARRAY_INDEX] = indices
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, out)
+		mesh.surface_set_material(0, material)
 	if r.node == null:
 		r.node = MeshInstance3D.new()
 		add_child(r.node)

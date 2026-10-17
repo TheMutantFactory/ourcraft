@@ -6,7 +6,19 @@ var _failures := 0
 var _count := 0
 
 
-func _init() -> void:
+var _ran := false
+
+
+## Runs on the first frame so nodes added to the tree (WorldView) are ready.
+func _process(_delta: float) -> bool:
+	if _ran:
+		return true
+	_ran = true
+	_run()
+	return true
+
+
+func _run() -> void:
 	print("native extension: %s" % ("loaded" if Native.available() else "not built (GDScript paths)"))
 	test_grid_fill_and_counts()
 	test_negative_coordinates()
@@ -29,6 +41,13 @@ func _init() -> void:
 	test_loads_and_converts_v1_folder()
 	test_loads_hand_formatted_objects_json()
 	test_outline_builds_rows_lazily()
+	test_corner_reparent()
+	test_corner_depth_limit()
+	test_corner_wide_and_empty()
+	test_corner_rotation_and_far_offsets()
+	test_corner_delete_used_object()
+	test_corner_names_and_history()
+	test_corner_import_existing_id()
 	test_demo_tree_depth()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -458,9 +477,7 @@ func test_loads_hand_formatted_objects_json() -> void:
 
 func test_outline_builds_rows_lazily() -> void:
 	var hud := Hud.new()
-	# The tests run before the first frame, so build the HUD's controls now;
-	# it's freed again before a frame could run _ready a second time.
-	hud._ready()
+	root.add_child(hud)
 	var p := Demo.build(0.01)
 	hud.refresh_outline(p, PackedStringArray(), null)
 	var world := hud.outline.get_root()
@@ -480,6 +497,139 @@ func test_outline_builds_rows_lazily() -> void:
 	var sel := hud.outline.get_selected()
 	check(sel != null and sel.get_metadata(0) == path, "the selected deep row is built and selected")
 	hud.free()
+
+
+## A WorldView attached to the running tree.
+func _test_view(p: Project) -> WorldView:
+	var view := WorldView.new()
+	root.add_child(view)
+	view.set_project(p)
+	view.flush()
+	return view
+
+
+func test_corner_reparent() -> void:
+	var p := Project.create_empty(0.01)
+	var a := p.create_def("A")
+	var b := p.create_def("B")
+	var c := p.create_def("C")
+	var ia := p.add_instance(p.root_id, a.id, Vector3i.ZERO)
+	var ib := p.add_instance(a.id, b.id, Vector3i(5, 0, 0))
+	p.add_instance(b.id, c.id, Vector3i.ZERO)
+	check(not p.reparent_instance(p.root_id, ia.id, b.id, Vector3i.ZERO), "can't move A into its own descendant B")
+	check(not p.reparent_instance(a.id, ib.id, b.id, Vector3i.ZERO), "can't move B into itself")
+	check(p.reparent_instance(a.id, ib.id, a.id, Vector3i(9, 0, 0)) and ib.offset == Vector3i(9, 0, 0), "moving within the same parent works")
+	check(p.reparent_instance(a.id, ib.id, p.root_id, Vector3i(1, 2, 3)), "move B up to the world")
+	check(a.children.is_empty() and p.root().find_child(ib.id) == ib, "B left A and joined the world with the same id")
+	p.undo()
+	check(a.find_child(ib.id) != null and p.root().find_child(ib.id) == null, "undo puts B back in A")
+
+
+## Paths deeper than Project.MAX_DEPTH (32) aren't rendered. This pins the
+## current behaviour: a 40-deep chain renders its first 33 levels, without
+## errors, and the data keeps all 40.
+func test_corner_depth_limit() -> void:
+	var p := Project.create_empty(0.01)
+	var parent := p.root()
+	for i in 40:
+		var d := p.create_def("L%d" % i)
+		d.grid.set_cell(Vector3i.ZERO, 1)
+		p.add_instance(parent.id, d.id, Vector3i(0, 0, 2))
+		parent = d
+	var view := _test_view(p)
+	check(view._placements.size() == Project.MAX_DEPTH + 1, "deep chain renders %d levels (limit %d)" % [view._placements.size(), Project.MAX_DEPTH])
+	check(p.dependencies(p.root_id).size() == 41, "the data keeps all 40 levels")
+	view.free()
+
+
+func test_corner_wide_and_empty() -> void:
+	var p := Project.create_empty(0.01)
+	var leaf := p.create_def("Leaf")
+	leaf.grid.set_cell(Vector3i.ZERO, 2)
+	var hub := p.create_def("Hub")
+	for i in 1000:
+		hub.children.append(Demo._inst(p, leaf.id, Vector3i(i * 3, 0, 0), i % 4))
+	var empty := p.create_def("Empty")
+	p.add_instance(p.root_id, hub.id, Vector3i.ZERO)
+	p.add_instance(p.root_id, empty.id, Vector3i(0, 0, 50))
+	var view := _test_view(p)
+	check(view._placements.size() == 1003, "1000 children render (%d placements)" % view._placements.size())
+	check(view._renderer.drawn_placements().size() + view._baker.baked_placements().size() == 1003, "every placement drawn once")
+	check(p.def_bounds(empty.id).size == Vector3.ZERO, "an empty object has zero bounds")
+	view.free()
+	var dir := _fresh_dir("wide.ourcraft")
+	p.save_dir(dir)
+	var q := Project.load_dir(dir)
+	check(q != null and q.defs.size() == p.defs.size() and q.defs[empty.id].grid.is_empty(), "empty and wide objects round-trip")
+
+
+## Quarter turns compose exactly; integer offsets stay exact up to the
+## float limit (2^24 smallest blocks, ~168 km at 1 cm).
+func test_corner_rotation_and_far_offsets() -> void:
+	var b := Basis.IDENTITY
+	for i in 4:
+		b = b * ObjectInstance.basis_for(1)
+	check(b == Basis.IDENTITY, "four quarter turns are exactly the identity")
+	var p := Project.create_empty(0.01)
+	var a := p.create_def("Far")
+	var ok := true
+	for off in [Vector3i(8_000_000, 0, -8_000_000), Vector3i(16_777_215, 3, 1)]:
+		var inst := p.add_instance(p.root_id, a.id, off)
+		var o := p.path_transform(PackedStringArray([inst.id])).origin
+		if Vector3i(o) != off:
+			ok = false
+	check(ok, "offsets up to 2^24 blocks stay exact")
+	var beyond := p.add_instance(p.root_id, a.id, Vector3i(16_777_217, 0, 0))
+	var o2 := p.path_transform(PackedStringArray([beyond.id])).origin
+	check(int(o2.x) != 16_777_217, "beyond 2^24 blocks positions round (known limit)")
+
+
+func test_corner_delete_used_object() -> void:
+	var p := Demo.build(0.01)
+	var fork: ObjectDef
+	for d in p.defs.values():
+		if d.name == "Fork":
+			fork = d
+	var uses := p.usage_count(fork.id)
+	check(uses == 2, "fork used twice in the demo")
+	p.edit_box(p.root_id, Vector3i.ZERO, Vector3i.ONE, 3)
+	check(p.delete_def(fork.id), "delete a used object")
+	check(not p.can_undo(), "deleting an object clears undo history")
+	var dangling := false
+	for d in p.defs.values():
+		for inst in d.children:
+			if inst.def_id == fork.id:
+				dangling = true
+	check(not dangling and not p.delete_def(p.root_id), "no dangling instances; the world can't be deleted")
+
+
+func test_corner_names_and_history() -> void:
+	var p := Project.create_empty(0.01)
+	var d := p.create_def("Thing")
+	p.rename_def(d.id, "   ")
+	check(d.name == "Thing", "a blank name is ignored")
+	p.rename_def(d.id, "  naïve café  ")
+	check(d.name == "naïve café", "names are trimmed and keep accents")
+	var e := p.create_def("Thing")
+	check(e.name == "Thing" and p.unique_name("Thing") == "Thing 2", "duplicate names are allowed; unique_name numbers them")
+	for i in Project.MAX_HISTORY + 20:
+		p.edit_box(d.id, Vector3i(i, 0, 0), Vector3i(i + 1, 1, 1), 1)
+	check(p._undo.size() == Project.MAX_HISTORY, "undo history is capped at %d" % Project.MAX_HISTORY)
+
+
+## Importing a bundle whose object id already exists keeps the local
+## object, even if the bundle's version differs (documented behaviour).
+func test_corner_import_existing_id() -> void:
+	var p := Demo.build(0.01)
+	var table: ObjectDef
+	for d in p.defs.values():
+		if d.name == "Table":
+			table = d
+	var file := ProjectSettings.globalize_path("user://test_projects/table2.ourobj.json")
+	p.export_object(table.id, file)
+	table.grid.set_cell(Vector3i(0, 50, 0), 9)
+	var before := table.grid.solid_count()
+	check(p.import_bundle(file) == table.id and table.grid.solid_count() == before, "importing an existing id keeps the local version")
 
 
 func test_bundle_export_import() -> void:

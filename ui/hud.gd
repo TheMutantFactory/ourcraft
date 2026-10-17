@@ -146,7 +146,7 @@ Middle click pick colour · 1–0 colour
 Scroll brush size · T surface / grid placing
 , . shrink / grow yourself
 Q select · Q again walk up · Shift+Q walk down
-Enter edit · Backspace leave · I isolate
+Enter edit · Backspace leave · I isolate · L lines
 N new object · G move · R rotate · Del delete
 Ctrl+C copy · Ctrl+V paste · Ctrl+D duplicate
 U make unique · Ctrl+Z undo · Ctrl+Shift+Z redo
