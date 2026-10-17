@@ -12,16 +12,14 @@ validation criteria, and the first five days of work.
 
 ## Running the MVP
 
-Requires Godot 4.7. Open `project.godot` in the Godot editor and press Play, or:
+Requires Godot 4.7. The scripts in `tools/` find Godot on your `PATH`, in
+`/Applications`, `~/Applications` or `~/Downloads`. Set `GODOT=/path/to/godot`
+to use a different copy.
 
 ```bash
-godot --path .
-```
-
-Run the core tests headlessly:
-
-```bash
-godot --headless --path . --script res://tests/run_tests.gd
+tools/run.sh          # play (tools/run.sh --demo starts a fresh demo street)
+tools/test.sh         # headless core tests; non-zero exit on failure
+tools/edit.sh         # open in the Godot editor
 ```
 
 The first launch builds a demo street (World › Street › House › Kitchen ›
@@ -70,3 +68,4 @@ Table › Fork). Press **Ctrl+S** to save it to
 - `game/`: player controller and input handling
 - `ui/`: HUD and side panel
 - `tests/`: headless core tests
+- `tools/`: run, test and editor launch scripts
