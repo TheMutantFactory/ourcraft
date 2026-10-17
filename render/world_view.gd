@@ -3,6 +3,11 @@ extends Node3D
 ## Renders a Project. Chunk meshes and collision shapes are built once per
 ## object definition and shared by every instance of it, so instancing is
 ## cheap and an edit shows up in every copy at once.
+##
+## The instance tree is flattened into placements (one per rendered copy of
+## an object, with its world transform). InstanceRenderer draws them with
+## MultiMeshes and CollisionField gives the ones near the player physics
+## bodies; no nodes are created per instance.
 
 ## Main-thread time per frame for uploading meshes from worker jobs.
 const UPLOAD_BUDGET_USEC := 4000
@@ -14,12 +19,6 @@ var material: ShaderMaterial
 
 ## def_id -> {Vector3i key -> {"mesh": ArrayMesh, "shape": ConcavePolygonShape3D}}
 var _meshes: Dictionary = {}
-## def_id -> Array of chunk container nodes (one per rendered instance)
-var _containers: Dictionary = {}
-## path string -> instance Node3D
-var _nodes: Dictionary = {}
-## instance id -> Array of instance Node3D (one per place it is rendered)
-var _nodes_by_inst: Dictionary = {}
 ## def_id -> {key -> true}
 var _dirty: Dictionary = {}
 ## "def_id|key" -> edit counter, so results for stale snapshots are dropped.
@@ -32,8 +31,9 @@ var _max_jobs := maxi(1, OS.get_processor_count() - 1)
 var _depth_materials: Array = []
 ## Physics bodies near the player (see CollisionField).
 var collision: CollisionField
+## Array of {path, def_id, depth, xform (metres), cell_m}
 var _placements: Array = []
-var _root_node: Node3D
+var _renderer: InstanceRenderer
 var _isolated = null # PackedStringArray or null
 var _tree_dirty := false
 
@@ -43,6 +43,9 @@ func _ready() -> void:
 	collision = CollisionField.new(get_world_3d().space)
 	material = ShaderMaterial.new()
 	material.shader = load("res://render/voxel.gdshader")
+	_renderer = InstanceRenderer.new()
+	_renderer.material_for_depth = _material_for_depth
+	add_child(_renderer)
 
 
 func _exit_tree() -> void:
@@ -198,10 +201,7 @@ func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 	if built.is_empty():
 		if entries.has(key):
 			entries.erase(key)
-			for container in _containers.get(def_id, []):
-				var n: Node = container.get_node_or_null(_key_name(key))
-				if n != null:
-					n.free()
+			_renderer.chunk_removed(def_id, key)
 			collision.update_def(def_id)
 		return
 	var entry = entries.get(key)
@@ -216,8 +216,7 @@ func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 	mesh.surface_set_material(0, material)
 	entry.shape.set_faces(built.faces)
 	if fresh:
-		for container in _containers.get(def_id, []):
-			_add_chunk_node(container, key, entry)
+		_renderer.chunk_added(def_id, key, mesh)
 		collision.update_def(def_id)
 
 
@@ -231,33 +230,37 @@ func _material_for_depth(depth: int) -> ShaderMaterial:
 	return _depth_materials[depth]
 
 
-static func _key_name(key: Vector3i) -> String:
-	return "c_%d_%d_%d" % [key.x, key.y, key.z]
-
-
-func _add_chunk_node(container: Node3D, key: Vector3i, entry: Dictionary) -> void:
-	var mi := MeshInstance3D.new()
-	mi.name = _key_name(key)
-	mi.mesh = entry.mesh
-	# Deeper objects win where faces are coplanar (see voxel.gdshader).
-	mi.material_override = _material_for_depth(container.get_meta("path").size())
-	container.add_child(mi)
-
-
 # --- Instance tree ---------------------------------------------------------
 
 func rebuild_tree() -> void:
 	_tree_dirty = false
-	if _root_node != null:
-		_root_node.free()
-	_containers.clear()
-	_nodes.clear()
-	_nodes_by_inst.clear()
 	_placements = []
-	_root_node = _build_node(project.root_id, PackedStringArray(), null, 0, Transform3D.IDENTITY)
-	add_child(_root_node)
+	_collect(project.root_id, PackedStringArray(), Transform3D.IDENTITY, 0)
 	collision.set_placements(_placements, _chunk_bounds)
 	_apply_isolation()
+
+
+## Walks the instance tree, adding a placement for every rendered object.
+func _collect(def_id: String, path: PackedStringArray, xform: Transform3D, depth: int) -> void:
+	var def: ObjectDef = project.defs.get(def_id)
+	if def == null:
+		return
+	_placements.append({"path": path, "def_id": def_id, "depth": depth, "xform": xform,
+		"cell_m": project.voxel_size * def.unit})
+	if depth >= Project.MAX_DEPTH:
+		return
+	for child in def.children:
+		var child_path := path.duplicate()
+		child_path.append(child.id)
+		_collect(child.def_id, child_path, xform * _local_xform(child), depth + 1)
+
+
+func _local_xform(inst: ObjectInstance) -> Transform3D:
+	return Transform3D(ObjectInstance.basis_for(inst.rot), Vector3(inst.offset) * project.voxel_size)
+
+
+func render_node_count() -> int:
+	return _renderer.node_count()
 
 
 ## Bounds of a definition's allocated chunks, in its local metres.
@@ -281,51 +284,11 @@ func world_xform(path: PackedStringArray) -> Transform3D:
 	return t
 
 
-func _build_node(def_id: String, path: PackedStringArray, inst: ObjectInstance, depth: int, parent_xform: Transform3D) -> Node3D:
-	var node := Node3D.new()
-	var xform := parent_xform
-	node.name = "i_" + (inst.id if inst != null else "root")
-	node.set_meta("path", path)
-	if inst != null:
-		_apply_transform(node, inst)
-		_nodes_by_inst.get_or_add(inst.id, []).append(node)
-		xform = parent_xform * node.transform
-	_nodes["/".join(path)] = node
-	var container := Node3D.new()
-	container.name = "chunks"
-	container.set_meta("path", path)
-	container.set_meta("def_id", def_id)
-	node.add_child(container)
-	_containers.get_or_add(def_id, []).append(container)
-	var entries: Dictionary = _meshes.get(def_id, {})
-	for key in entries:
-		_add_chunk_node(container, key, entries[key])
-	var def: ObjectDef = project.defs.get(def_id)
-	if def != null:
-		_placements.append({"path": path, "def_id": def_id, "xform": xform,
-			"cell_m": project.voxel_size * def.unit})
-	if def != null and depth < Project.MAX_DEPTH:
-		for child in def.children:
-			var child_path := path.duplicate()
-			child_path.append(child.id)
-			node.add_child(_build_node(child.def_id, child_path, child, depth + 1, xform))
-	return node
-
-
-func _apply_transform(node: Node3D, inst: ObjectInstance) -> void:
-	node.transform = Transform3D(ObjectInstance.basis_for(inst.rot), Vector3(inst.offset) * project.voxel_size)
-
-
 ## Updates every rendered copy of an instance after its transform changed
 ## without rebuilding the tree (used while dragging).
 func refresh_instance(inst: ObjectInstance) -> void:
-	for node in _nodes_by_inst.get(inst.id, []):
-		_apply_transform(node, inst)
 	collision.refresh_instance(inst.id, world_xform)
-
-
-func node_for(path: PackedStringArray) -> Node3D:
-	return _nodes.get("/".join(path))
+	_renderer.update(collision.placements_under(inst.id))
 
 
 ## Physics bodies belonging to every rendered copy of an instance.
@@ -359,30 +322,10 @@ func set_isolation(path) -> void:
 
 
 func _apply_isolation() -> void:
-	if _root_node == null:
-		return
-	_set_active(_root_node, true)
+	_renderer.set_placements(_placements, _is_visible, _meshes)
+
+
+func _is_visible(i: int) -> bool:
 	if _isolated == null:
-		return
-	var node := _root_node
-	for k in range(_isolated.size() + 1):
-		var next_name: String = "i_" + _isolated[k] if k < _isolated.size() else ""
-		for child in node.get_children():
-			if k == _isolated.size():
-				break
-			if child.name != next_name:
-				_set_active(child, false)
-		if k == _isolated.size():
-			break
-		node = node.get_node_or_null(NodePath(next_name))
-		if node == null:
-			return
-
-
-func _set_active(node: Node3D, on: bool) -> void:
-	node.visible = on
-	node.process_mode = Node.PROCESS_MODE_INHERIT if on else Node.PROCESS_MODE_DISABLED
-	if on:
-		for child in node.get_children():
-			if child is Node3D:
-				_set_active(child, true)
+		return true
+	return CollisionField._has_prefix(_placements[i].path, _isolated)
