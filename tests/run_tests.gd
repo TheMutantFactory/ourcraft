@@ -20,6 +20,7 @@ func _init() -> void:
 	test_fork()
 	test_save_load_round_trip()
 	test_bundle_export_import()
+	test_incremental_save()
 	test_demo_tree_depth()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
@@ -265,6 +266,42 @@ func test_save_load_round_trip() -> void:
 		check(a.grid.solid_count() == b.grid.solid_count(), "voxels %s" % a.name)
 		check(JSON.stringify(a.to_dict()) == JSON.stringify(b.to_dict()), "identical serialisation %s" % a.name)
 	check(q.voxel_size == p.voxel_size, "min block size")
+
+
+func test_incremental_save() -> void:
+	var p := Demo.build(0.01)
+	var dir := ProjectSettings.globalize_path("user://test_projects/inc.ourcraft")
+	check(p.save_dir(dir) == OK, "first save")
+	check(p.last_save_written == p.defs.size(), "first save writes every object")
+	p.save_dir(dir)
+	check(p.last_save_written == 0, "unchanged save writes nothing")
+	var fork: ObjectDef
+	var table: ObjectDef
+	for d in p.defs.values():
+		if d.name == "Fork": fork = d
+		if d.name == "Table": table = d
+	p.edit_box(fork.id, Vector3i(0, 5, 0), Vector3i(3, 6, 3), 4)
+	p.set_instance_transform(table.id, table.children[0].id, Vector3i(31, 76, 40), 1)
+	p.rename_def(p.root_id, "Renamed world")
+	p.save_dir(dir)
+	check(p.last_save_written == 3, "only edited, moved-in and renamed objects rewritten: %d" % p.last_save_written)
+	p.undo()
+	p.save_dir(dir)
+	check(p.last_save_written == 1, "undo marks its object changed")
+	var spare := p.create_def("Spare")
+	p.save_dir(dir)
+	p.delete_def(spare.id)
+	p.save_dir(dir)
+	check(not FileAccess.file_exists(dir.path_join("objects").path_join(spare.id + ".json")), "deleted object's file removed")
+	var q := Project.load_dir(dir)
+	var same := q != null and q.defs.size() == p.defs.size()
+	if same:
+		for id in p.defs:
+			if JSON.stringify(p.defs[id].to_dict()) != JSON.stringify(q.defs[id].to_dict()):
+				same = false
+	check(same, "incremental saves load back identical")
+	q.save_dir(dir)
+	check(q.last_save_written == 0, "a freshly loaded project saves nothing back")
 
 
 func test_bundle_export_import() -> void:

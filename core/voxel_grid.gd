@@ -140,10 +140,7 @@ func set_chunk(key: Vector3i, data) -> void:
 	if data == null:
 		_erase_chunk(key)
 		return
-	var count := 0
-	for v in data:
-		if v != 0:
-			count += 1
+	var count: int = data.size() - data.count(0)
 	if count == 0:
 		_erase_chunk(key)
 		return

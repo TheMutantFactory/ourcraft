@@ -40,6 +40,13 @@ var _redo: Array = []
 var _step = null
 var _depth := 0
 var _bounds_cache: Dictionary = {}
+## Saving only rewrites objects changed since the last save to the same
+## directory: _clean holds ids whose file at _saved_path is up to date.
+var _saved_path := ""
+var _clean: Dictionary = {}
+var _removed_since_save := false
+## Number of object files the last save_dir wrote (for tests and tools).
+var last_save_written := 0
 
 
 static func create_empty(voxel_size_m: float) -> Project:
@@ -89,6 +96,7 @@ func rename_def(def_id: String, new_name: String) -> void:
 	if def == null or new_name.strip_edges() == "":
 		return
 	def.name = new_name.strip_edges()
+	_clean.erase(def_id)
 	library_changed.emit()
 	structure_changed.emit()
 
@@ -113,6 +121,7 @@ func set_def_unit(def_id: String, unit: int) -> void:
 	if def == null or unit < 1 or def.unit == unit:
 		return
 	def.unit = unit
+	_clean.erase(def_id)
 	_bounds_cache.clear()
 	voxels_changed.emit(def_id, def.grid.chunks.keys())
 	structure_changed.emit()
@@ -124,8 +133,13 @@ func delete_def(def_id: String) -> bool:
 	if def_id == root_id or not defs.has(def_id):
 		return false
 	for def in defs.values():
-		def.children = def.children.filter(func(i): return i.def_id != def_id)
+		var kept: Array = def.children.filter(func(i): return i.def_id != def_id)
+		if kept.size() != def.children.size():
+			def.children = kept
+			_clean.erase(def.id)
 	defs.erase(def_id)
+	_clean.erase(def_id)
+	_removed_since_save = true
 	_undo.clear()
 	_redo.clear()
 	_bounds_cache.clear()
@@ -273,12 +287,14 @@ func cancel_step() -> void:
 
 
 func _record_chunk(def: ObjectDef, key: Vector3i) -> void:
+	_clean.erase(def.id)
 	var d: Dictionary = _step.chunks.get_or_add(def.id, {})
 	if not d.has(key):
 		d[key] = def.grid.get_chunk_copy(key)
 
 
 func _record_children(def: ObjectDef) -> void:
+	_clean.erase(def.id)
 	if not _step.children.has(def.id):
 		_step.children[def.id] = def.copy_children()
 
@@ -411,12 +427,14 @@ func _apply(step: Dictionary) -> Dictionary:
 			for n in [Vector3i.LEFT, Vector3i.RIGHT, Vector3i.UP, Vector3i.DOWN, Vector3i.FORWARD, Vector3i.BACK]:
 				affected[key + n] = true
 		inv.chunks[def_id] = inv_chunks
+		_clean.erase(def_id)
 		voxels_changed.emit(def_id, affected.keys())
 	for def_id in step.children:
 		var def: ObjectDef = defs.get(def_id)
 		if def == null:
 			continue
 		inv.children[def_id] = def.copy_children()
+		_clean.erase(def_id)
 		var restored := []
 		for inst in step.children[def_id]:
 			restored.append(inst.copy())
@@ -448,24 +466,38 @@ func manifest() -> Dictionary:
 	}
 
 
-## Saves as a directory: manifest.json plus objects/<id>.json.
+## Saves as a directory: manifest.json plus objects/<id>.json. Saving again
+## to the same directory only rewrites objects that changed. Objects are
+## written before the manifest, so an interrupted save leaves the previous
+## manifest pointing at complete files.
 func save_dir(path: String) -> Error:
 	var obj_dir := path.path_join("objects")
 	var err := DirAccess.make_dir_recursive_absolute(obj_dir)
 	if err != OK:
 		return err
-	err = _write_json(path.path_join("manifest.json"), manifest())
-	if err != OK:
-		return err
+	var full := path != _saved_path
+	if full:
+		_clean.clear()
+	last_save_written = 0
 	for def in defs.values():
+		if _clean.has(def.id):
+			continue
 		err = _write_json(obj_dir.path_join(def.id + ".json"), def.to_dict())
 		if err != OK:
 			return err
-	var dir := DirAccess.open(obj_dir)
-	if dir != null:
-		for f in dir.get_files():
-			if f.ends_with(".json") and not defs.has(f.get_basename()):
-				dir.remove(f)
+		_clean[def.id] = true
+		last_save_written += 1
+	err = _write_json(path.path_join("manifest.json"), manifest())
+	if err != OK:
+		return err
+	if full or _removed_since_save:
+		var dir := DirAccess.open(obj_dir)
+		if dir != null:
+			for f in dir.get_files():
+				if f.ends_with(".json") and not defs.has(f.get_basename()):
+					dir.remove(f)
+	_saved_path = path
+	_removed_since_save = false
 	return OK
 
 
@@ -493,6 +525,9 @@ static func load_dir(path: String) -> Project:
 	if not p.defs.has(p.root_id):
 		return null
 	p._drop_dangling()
+	p._saved_path = path
+	for id in p.defs:
+		p._clean[id] = true
 	return p
 
 
@@ -548,14 +583,21 @@ func import_bundle(file_path: String) -> String:
 	return root_obj if defs.has(root_obj) else ""
 
 
+## Writes JSON, replacing an existing file atomically (write a temp file,
+## then rename) so an interrupted save never leaves a half-written file. New
+## files are written in place: there's no earlier version to protect, and
+## the manifest isn't updated to reference them until they're complete.
 static func _write_json(file_path: String, data) -> Error:
-	var tmp := file_path + ".tmp"
-	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	var exists := FileAccess.file_exists(file_path)
+	var target := file_path + ".tmp" if exists else file_path
+	var f := FileAccess.open(target, FileAccess.WRITE)
 	if f == null:
 		return FileAccess.get_open_error()
 	f.store_string(JSON.stringify(data, "  ", true))
 	f.close()
-	return DirAccess.rename_absolute(tmp, file_path)
+	if not exists:
+		return OK
+	return DirAccess.rename_absolute(target, file_path)
 
 
 static func _read_json(file_path: String):
