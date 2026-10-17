@@ -21,3 +21,6 @@ bin/
 native/extension_api.json
 native/src/*.os
 native/.sconsign*.dblite
+
+# Downloaded datasets (see tools/fetch-*.sh)
+data/
