@@ -64,10 +64,10 @@ func _setup() -> void:
 	var player: Player = main.player
 	player.driven = true
 	player.set_third_person(true)
-	# High and steep, so the trail behind the cube stays in view.
-	player.follow = 12.0
-	player.follow_up = 6.0
-	player.set_pitch(deg_to_rad(-34))
+	# Low behind the cube, looking along the street.
+	player.follow = 4.5
+	player.follow_up = 0.2
+	player.set_pitch(deg_to_rad(-8))
 	player.global_position = _points[0]
 	player.rotation = Vector3(0, _yaw(_points[1] - _points[0]), 0)
 
