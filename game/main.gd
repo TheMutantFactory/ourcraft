@@ -218,6 +218,7 @@ func _run_debug_args() -> void:
 		for i in int(args.get("wait", "20")):
 			await get_tree().process_frame
 		print("fps=%d chunks_pending=%d player_y=%.3f bodies=%d regions=%d render_nodes=%d placements=%d live=%d" % [Engine.get_frames_per_second(), view.pending_chunks(), player.global_position.y, view.collision.active_count(), view.baked_region_count(), view.render_node_count(), view._placements.size(), view._renderer.drawn_placements().size()])
+		print("draw_calls=%d objects=%d primitives=%d" % [Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME), Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)])
 		get_viewport().get_texture().get_image().save_png(str(args.shot))
 		get_tree().quit()
 
