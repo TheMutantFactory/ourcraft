@@ -157,7 +157,8 @@ func sync(meshes: Dictionary) -> void:
 	_reindex_stale()
 	var want := {}
 	var seen := {}
-	for c in _cells(AABB(focus - Vector3.ONE * radius, Vector3.ONE * radius * 2.0)):
+	# A radius of 0 means no bodies at all (scenarios with their own collision).
+	for c in (_cells(AABB(focus - Vector3.ONE * radius, Vector3.ONE * radius * 2.0)) if radius > 0.0 else []):
 		for i in _hash.get(c, []):
 			if seen.has(i):
 				continue

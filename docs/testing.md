@@ -11,6 +11,7 @@
 | `tools/burst.sh` | The burst scenario: gradient words on platforms burst into flying pieces. |
 | `tools/black-rock-city.sh` | A roughly 1:1 Black Rock City: kilometres of roads, thousands of instanced camps. |
 | `tools/brc-tour.sh` | A cube walks every Black Rock City intersection once, leaving a gradient trail. |
+| `tools/katamari.sh` | Katamari-style: roll up small things until you can roll up big things. |
 
 ## Tree fuzzing
 
@@ -272,6 +273,54 @@ The street grid comes from `environment.roads` in the city's manifest,
 which `tools/black-rock-city.sh` writes; `brc-tour.sh` rebuilds the city
 if it's missing. A 30 s soak at 320 m/s (2026-10-18): 41 intersections,
 9.6 km, 9,601 dots, 62 fps, all checks passed.
+
+## Katamari
+
+```bash
+tools/katamari.sh              # WASD roll, mouse turns the camera, P autopilot
+tools/katamari.sh --auto       # start on autopilot
+tools/katamari.sh --soak=300   # autopilot for 300 s, check, report, quit
+```
+
+A ball starts 10 cm across on a fresh field of about 4,150 objects. It
+picks up anything whose longest side is at most its radius, and grows by
+twice the volume it picks up. Every object is the same three-block
+staircase; only the block size changes, and each block size has its own
+colour:
+
+| Blocks | Object | Colour | Copies | Spread |
+|---|---|---|---|---|
+| 1 cm | 3 cm | red | 1,200 | 5 m |
+| 2 cm | 6 cm | orange | 900 | 10 m |
+| 5 cm | 15 cm | yellow | 700 | 20 m |
+| 10 cm | 30 cm | green | 500 | 40 m |
+| 25 cm | 75 cm | teal | 350 | 80 m |
+| 50 cm | 1.5 m | blue | 250 | 160 m |
+| 1 m | 3 m | violet | 150 | 320 m |
+| 2.5 m | 7.5 m | grey | 100 | 640 m |
+
+How it works:
+
+- **The ball is the only thing that collides.** The scenario keeps its own
+  4 m grid of object bounds. Anything too big pushes the ball back. No
+  physics bodies are made for objects (`Scenario.world_collision = false`;
+  a collision radius of 0 now means no bodies at all).
+- **A picked-up object stops being a game object.** It's hidden at once
+  (`WorldView.hide_instances`: a zero-size transform in its MultiMesh, no
+  rebuild). It's removed from the project in batches every second (one
+  view rebuild per batch, pruning a class's object with its last copy).
+  On the ball it's a transform in a per-class MultiMesh.
+- **Pieces are retired** once the ball's radius passes their farthest
+  possible corner (centre + half its size × √3), so they're buried. A
+  class's MultiMesh is freed with its last piece.
+- **Autopilot** rolls to the pickable object with the most volume per metre
+  of travel, and sidesteps when it stops making progress.
+
+A 300 s autopilot soak (2026-10-18): the ball grew to 38 m across, picking
+up 407 objects. Only 39 pieces were on the ball at the end (368 retired).
+RAM rose 45 MB, it ran at 120 fps, and all checks passed. The soak also
+checks that the project holds exactly the objects not picked up, and that
+empty classes have no MultiMesh left.
 
 ## What these found (2026-10-17)
 

@@ -70,8 +70,9 @@ synthetic tree world, the tree fuzzer, the hole scenario (`tools/hole.sh`:
 clouds drop word trees into a hole that destroys what touches it) and the
 burst scenario (`tools/burst.sh`: gradient words burst into flying pieces),
 a roughly 1:1 Black Rock City for testing distance and scale
-(`tools/black-rock-city.sh`) and a cube touring all of its intersections
-(`tools/brc-tour.sh`), see [docs/testing.md](docs/testing.md).
+(`tools/black-rock-city.sh`) a cube touring all of its intersections
+(`tools/brc-tour.sh`) and a Katamari-style ball that rolls up everything
+(`tools/katamari.sh`), see [docs/testing.md](docs/testing.md).
 
 ## Concepts
 

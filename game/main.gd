@@ -82,6 +82,8 @@ func _ready() -> void:
 			scenario = BurstScenario.new()
 		"tour":
 			scenario = RoadTour.new()
+		"katamari":
+			scenario = KatamariScenario.new()
 	if scenario != null:
 		add_child(scenario)
 		scenario.attach(self, project, view)
@@ -97,8 +99,10 @@ func _ready() -> void:
 			player.global_position = Vector3(0, 0.2, 0)
 			player.set_pitch(deg_to_rad(8))
 			hud.toast("Burst scenario: words burst into pieces. B bursts the selected or aimed object.", 6.0)
-		else:
+		elif scenario is RoadTour:
 			hud.toast("Road tour: every intersection once, from Center Camp. [ ] speed · P pause · mouse orbits", 8.0)
+		else:
+			hud.toast("Roll up things smaller than you. WASD roll · mouse turns · P autopilot", 8.0)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_run_debug_args()
 
@@ -337,10 +341,7 @@ func _use_project(p: Project) -> void:
 		project.structure_changed.disconnect(_mark_outline)
 		project.library_changed.disconnect(_mark_outline)
 	project = p
-	if _scenery != null:
-		_scenery.free()
-	_scenery = Scenery.add_to(self, _hole, project.environment)
-	player.camera.far = float(project.environment.get("far", 4000.0))
+	apply_environment()
 	project.structure_changed.connect(_mark_outline)
 	project.library_changed.connect(_mark_outline)
 	project.voxels_changed.connect(func(_id, _keys): tree_lines.mark_dirty())
@@ -355,6 +356,14 @@ func _use_project(p: Project) -> void:
 	if scenario != null:
 		scenario.attach(self, project, view)
 	_refresh_hud_static()
+
+
+## (Re)builds the sky, ground and fog from project.environment.
+func apply_environment() -> void:
+	if _scenery != null:
+		_scenery.free()
+	_scenery = Scenery.add_to(self, _hole, project.environment)
+	player.camera.far = float(project.environment.get("far", 4000.0))
 
 
 func _mark_outline() -> void:
@@ -402,8 +411,10 @@ func _cm(min_units: float) -> String:
 func _physics_process(_delta: float) -> void:
 	# Bodies exist only within reach of the player; a little margin covers
 	# walking into things.
-	view.set_focus(player.global_position + Vector3.UP * Player.EYE * player.size,
-		player.reach() + 2.0 * maxf(player.size, 0.5))
+	var reach := player.reach() + 2.0 * maxf(player.size, 0.5)
+	if scenario != null and not scenario.world_collision:
+		reach = 0.0
+	view.set_focus(player.global_position + Vector3.UP * Player.EYE * player.size, reach)
 	_update_aim()
 	if not _grab.is_empty():
 		_update_grab()
