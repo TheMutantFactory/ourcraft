@@ -69,7 +69,8 @@ Sources are listed in [docs/bibliography.md](docs/bibliography.md). For the
 synthetic tree world, the tree fuzzer, the hole scenario (`tools/hole.sh`:
 clouds drop word trees into a hole that destroys what touches it) and the
 burst scenario (`tools/burst.sh`: gradient words burst into flying pieces),
-see [docs/testing.md](docs/testing.md).
+and a roughly 1:1 Black Rock City for testing distance and scale
+(`tools/black-rock-city.sh`), see [docs/testing.md](docs/testing.md).
 
 ## Concepts
 

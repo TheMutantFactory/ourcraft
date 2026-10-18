@@ -75,6 +75,39 @@ collected and how creators are credited. Status: considered, set aside.
 > Deitke, M., et al. (2023). Objaverse: A Universe of Annotated 3D Objects.
 > *CVPR 2023.*
 
+## Black Rock City layout
+
+Used for `tools/gen/black_rock_city.gd`. Only measurements were taken
+(distances, street widths, block depths, street names, plaza and Center
+Camp positions); no maps or text are copied. The pages are © Burning Man
+Project, all rights reserved.
+
+**2022 Black Rock City Plan.** Burning Man Project.
+<https://history.burningman.org/brc-history/event-archives/2022-event-archive/2022-black-rock-city-plan/>.
+Esplanade 2,500 ft from the Man; block depths (400, 250, 450 and 150 ft);
+40 ft streets; radials 2:00–10:00 every half hour; the 2022 street names.
+Status: **used.**
+
+**2018 Black Rock City Plan.** Burning Man Project.
+<https://history.burningman.org/brc-history/event-archives/2018-event-archive/2018-black-rock-city-plan/>.
+Plazas on B and G at 3:00, 4:30, 6:00, 7:30 and 9:00, about 200 ft across.
+Status: **used.**
+
+**2025 City Plan.** Burning Man Project.
+<https://survival.burningman.org/city-infrastructure/2025-city-plan/>.
+Center Camp at 6:00 off the Esplanade. Status: **used.**
+
+**2016 Black Rock City Plan** and **2023 BRC Plan.** Burning Man Project.
+<https://history.burningman.org/brc-history/event-archives/2016-event-archive/2016-black-rock-city-plan/>,
+<https://burningman.org/event/2023-brc-plan>. Status: considered, for
+checking the numbers from other years.
+
+**"We Got Ourselves a Fence"** (2018) and other Burning Man Journal posts
+about building the trash fence.
+<https://journal.burningman.org/2018/08/black-rock-city/building-brc/we-got-ourselves-a-fence/>.
+The pentagon about nine miles around. Status: **used** (the size is an
+estimate from it).
+
 ## Voxel formats and assets
 
 **MagicaVoxel .vox format.** ephtracy,
