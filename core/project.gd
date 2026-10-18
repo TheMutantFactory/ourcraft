@@ -32,6 +32,9 @@ const DEFAULT_PALETTE := [
 ]
 
 var title := "Untitled world"
+## Per-project scenery and camera settings (ground size/colour/height, fog,
+## view distance, spawn point); see Scenery.add_to and game/main.gd.
+var environment: Dictionary = {}
 ## Physical size of the minimum block, in metres.
 var voxel_size := 0.01
 var palette: Array = DEFAULT_PALETTE.duplicate()
@@ -589,6 +592,7 @@ func manifest() -> Dictionary:
 		"root": root_id,
 		"palette": pal,
 		"objects_file": OBJECTS_FILE,
+		"environment": environment,
 	}
 
 
@@ -747,6 +751,8 @@ static func load_dir(path: String) -> Project:
 		for h in pal:
 			p.palette.append(Color(str(h)))
 	p.root_id = str(m.get("root", ""))
+	var env = m.get("environment", {})
+	p.environment = env if env is Dictionary else {}
 	var ok := p._load_objects_v2(path) if version >= 2 else p._load_objects_v1(path, m)
 	if not ok or not p.defs.has(p.root_id):
 		return null

@@ -20,6 +20,8 @@ var overlay: Overlay
 var tree_lines: TreeLines
 ## The running scenario (HoleScenario, BurstScenario), if any.
 var scenario: Scenario
+var _scenery: Node3D
+var _hole := 0.0
 
 var edit_path := PackedStringArray()
 var selected = null # PackedStringArray or null
@@ -46,7 +48,7 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--scenario="):
 			scenario_name = a.trim_prefix("--scenario=")
-	Scenery.add_to(self, HoleScenario.HOLE if scenario_name == "hole" else 0.0)
+	_hole = HoleScenario.HOLE if scenario_name == "hole" else 0.0
 	view = WorldView.new()
 	add_child(view)
 	overlay = Overlay.new()
@@ -330,6 +332,10 @@ func _use_project(p: Project) -> void:
 		project.structure_changed.disconnect(_mark_outline)
 		project.library_changed.disconnect(_mark_outline)
 	project = p
+	if _scenery != null:
+		_scenery.free()
+	_scenery = Scenery.add_to(self, _hole, project.environment)
+	player.camera.far = float(project.environment.get("far", 4000.0))
 	project.structure_changed.connect(_mark_outline)
 	project.library_changed.connect(_mark_outline)
 	project.voxels_changed.connect(func(_id, _keys): tree_lines.mark_dirty())
@@ -351,8 +357,9 @@ func _mark_outline() -> void:
 
 
 func _reset_player() -> void:
-	player.global_position = Vector3(-2, 0.2, 3.0)
-	player.rotation = Vector3.ZERO
+	var spawn: Array = project.environment.get("spawn", [-2, 0.2, 3.0, 0])
+	player.global_position = Vector3(spawn[0], spawn[1], spawn[2])
+	player.rotation = Vector3(0, deg_to_rad(spawn[3]) if spawn.size() > 3 else 0.0, 0)
 	player.velocity = Vector3.ZERO
 
 

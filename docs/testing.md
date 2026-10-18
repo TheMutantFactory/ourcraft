@@ -9,6 +9,7 @@
 | `tools/synthetic-world.sh` | A synthetic deep-and-wide tree of random words, flat on the ground. |
 | `tools/hole.sh` | The hole scenario: a watchable soak test of creating and deleting object trees. |
 | `tools/burst.sh` | The burst scenario: gradient words on platforms burst into flying pieces. |
+| `tools/black-rock-city.sh` | A roughly 1:1 Black Rock City: kilometres of roads, thousands of instanced camps. |
 
 ## Tree fuzzing
 
@@ -169,6 +170,50 @@ cubes): 86 bursts, 10,210 cubes, about 119 fps. With sliced pieces
 
 Both scenarios share `game/scenario.gd` (soak timing, end-of-run checks,
 report, HUD lines).
+
+## Black Rock City
+
+```bash
+tools/black-rock-city.sh                 # ~5,900 objects, ~23,000 placed copies, ~3.5 s
+tools/black-rock-city.sh --seed=2 --density=0.1 --out=user://projects/brc-sparse.ourcraft
+tools/run.sh --project=user://projects/black-rock-city.ourcraft
+```
+
+A test level for chunks, distance and scale, laid out roughly 1:1 after
+the Burning Man city plan (sources in [bibliography.md](bibliography.md)).
+The clock is the city's: 12:00 is -Z, 3:00 is +X, 6:00 is +Z. You start at
+Center Camp facing the Man. Fly with F; flight speeds up with height
+(twice as fast at 6 m, 150× at 900 m), so the whole playa can be crossed.
+
+| Part | Built as | Block |
+|---|---|---|
+| Man (centre), Temple (12:00, 762 m out) | one object each, stepped base | 25 cm |
+| Esplanade (762 m) and A–K (to 1,780 m), 12 m wide, 2:00–10:00 | one object per street, sunk flush with the playa | 1 m |
+| 17 radials, every half hour from 2:00 to 10:00 | one object each | 1 m |
+| 9 plazas on B and G (61 m across) | one ring object, instanced | 1 m |
+| Center Camp at 6:00 & A: Rod's Road, about an acre of canopy, sign | object with three parts | 1 m, 50 cm, 10 cm |
+| 204 street signs, one per intersection ("4:30 & G") | unique text objects, one instanced post | 5 cm |
+| ~4,200 camps in 18 m lots: sector › block › camp | 2–6 instanced tents, shade, RVs and domes each; one in five named | 10 cm, 5 cm |
+| 60 word trees on the open playa, OURCRAFT by the Man | WordTrees | 5–1 cm, 25 cm |
+| Trash fence, a pentagon about 14.5 km around (circumradius ~2.46 km) | one object | 25 cm |
+
+The ground is 6 km across and lowered 2 cm so road tops don't z-fight it.
+Ground, fog, far plane and spawn come from the project's `environment`
+(manifest.json), which any world can set.
+
+Estimates, not from the published plans: the Temple's distance (same as
+the Esplanade), Rod's Road's radius (91 m), the canopy size and the fence
+(it's described as about nine miles around). The 2022 street names and
+block depths are used.
+
+**Measured (2026-10-18, M1 Pro, 2720×1710).** Generating takes 3.4 s and
+peaks at 0.8 GB. In game: 5,203 baked regions, 22,931 placements, 17,069
+of them live (the camp items each have hundreds of copies, so they're
+MultiMeshes). **8 fps** at ground level and close-up, 18 fps from 900 m up.
+The same city with no camps (`--density=0`) runs at **67 fps**. Every camp
+item is drawn at full detail at every distance, so the next step is
+distance level-of-detail: per-region MultiMeshes with visibility ranges,
+and coarser meshes (or none) for far camps.
 
 ## What these found (2026-10-17)
 

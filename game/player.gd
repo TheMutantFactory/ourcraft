@@ -70,7 +70,10 @@ func _physics_process(delta: float) -> void:
 		input = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var dir := (transform.basis * Vector3(input.x, 0, input.y)).normalized()
 	if flying:
+		# Faster the higher you fly, so big worlds can be crossed: twice as
+		# fast 6 m up (in player sizes), 150× at 900 m.
 		var speed := FLY * size * (2.5 if captured and Input.is_key_pressed(KEY_CTRL) else 1.0)
+		speed *= 1.0 + maxf(0.0, global_position.y) / (6.0 * size)
 		var vy := 0.0
 		if captured and Input.is_action_pressed("jump"): vy += 1.0
 		if captured and Input.is_action_pressed("descend"): vy -= 1.0

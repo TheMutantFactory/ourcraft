@@ -3,9 +3,16 @@ extends RefCounted
 ## Sky, sun and ground shared by the game and the stress test.
 
 
-## Adds sky, sun and ground. hole > 0 cuts a square hole of that size
-## (metres) out of the ground at the origin, with a pit below it.
-static func add_to(parent: Node, hole := 0.0) -> void:
+## Adds sky, sun and ground under one node (returned, so it can be
+## replaced when another project loads). hole > 0 cuts a square hole of that
+## size (metres) out of the ground at the origin, with a pit below it.
+## settings is a project's environment (Project.environment): ground_size
+## and ground_y (metres), ground_color / ground_line_color (hex), fog_density.
+static func add_to(parent: Node, hole := 0.0, settings := {}) -> Node3D:
+	var root := Node3D.new()
+	root.name = "Scenery"
+	parent.add_child(root)
+	parent = root
 	var env := Environment.new()
 	var sky := Sky.new()
 	var sky_mat := ProceduralSkyMaterial.new()
@@ -26,7 +33,7 @@ static func add_to(parent: Node, hole := 0.0) -> void:
 	env.ssao_intensity = 1.6
 	env.fog_enabled = true
 	env.fog_light_color = Color("#bcd6ee")
-	env.fog_density = 0.004
+	env.fog_density = float(settings.get("fog_density", 0.004))
 	env.fog_sky_affect = 0.0
 	var we := WorldEnvironment.new()
 	we.environment = env
@@ -43,18 +50,24 @@ static func add_to(parent: Node, hole := 0.0) -> void:
 
 	var gmat := ShaderMaterial.new()
 	gmat.shader = load("res://render/ground.gdshader")
+	if settings.has("ground_color"):
+		gmat.set_shader_parameter("base_color", Color(str(settings.ground_color)))
+	if settings.has("ground_line_color"):
+		gmat.set_shader_parameter("line_color", Color(str(settings.ground_line_color)))
 	var ground := StaticBody3D.new()
 	ground.set_meta("ground", true)
+	ground.position.y = float(settings.get("ground_y", 0.0))
 	parent.add_child(ground)
+	var e := float(settings.get("ground_size", 400.0)) * 0.5
 	if hole <= 0.0:
-		_ground_slab(ground, gmat, Rect2(-200, -200, 400, 400))
-		return
+		_ground_slab(ground, gmat, Rect2(-e, -e, e * 2, e * 2))
+		return root
 	# Four slabs around a square hole at the origin, and a dark pit below it.
 	var h := hole * 0.5
-	_ground_slab(ground, gmat, Rect2(-200, -200, 400, 200 - h))
-	_ground_slab(ground, gmat, Rect2(-200, h, 400, 200 - h))
-	_ground_slab(ground, gmat, Rect2(-200, -h, 200 - h, hole))
-	_ground_slab(ground, gmat, Rect2(h, -h, 200 - h, hole))
+	_ground_slab(ground, gmat, Rect2(-e, -e, e * 2, e - h))
+	_ground_slab(ground, gmat, Rect2(-e, h, e * 2, e - h))
+	_ground_slab(ground, gmat, Rect2(-e, -h, e - h, hole))
+	_ground_slab(ground, gmat, Rect2(h, -h, e - h, hole))
 	var pit := MeshInstance3D.new()
 	var box := BoxMesh.new()
 	box.size = Vector3(hole, PIT_DEPTH, hole)
@@ -69,6 +82,7 @@ static func add_to(parent: Node, hole := 0.0) -> void:
 	pit.material_override = pit_mat
 	pit.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(pit)
+	return root
 
 
 ## Depth of the pit under a hole, in metres.
