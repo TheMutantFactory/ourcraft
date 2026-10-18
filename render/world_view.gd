@@ -69,6 +69,8 @@ func _ready() -> void:
 	material.shader = load("res://render/voxel.gdshader")
 	_renderer = InstanceRenderer.new()
 	_renderer.material_for_depth = _material_for_depth
+	_renderer.coarse_mesh = _coarse_mesh
+	_renderer.size_of = _size_of
 	add_child(_renderer)
 	_baker = RegionBaker.new()
 	var baked_material: ShaderMaterial = material.duplicate()
@@ -256,6 +258,7 @@ func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 	if def == null:
 		_meshes.erase(def_id)
 		return
+	_renderer.voxels_changed(def_id)
 	var entries: Dictionary = _meshes.get_or_add(def_id, {})
 	if not def.grid.has_chunk(key):
 		var old = entries.get(key)
@@ -419,6 +422,54 @@ func _local_xform(inst: ObjectInstance) -> Transform3D:
 
 func render_node_count() -> int:
 	return _renderer.node_count()
+
+
+## [voxel size, longest extent of its voxels] in metres (InstanceRenderer).
+func _size_of(def_id: String) -> Array:
+	var def: ObjectDef = project.defs.get(def_id)
+	if def == null or def.grid.is_empty():
+		return [0.0, 0.0]
+	var voxel := project.voxel_size * def.unit
+	var size := def.grid.bounds().size
+	return [voxel, maxf(size.x, maxf(size.y, size.z)) * voxel]
+
+
+## A coarse mesh of an object for drawing far copies: its voxels grouped f³
+## into one in their most common colour (BurstEffect.voxel_box, which may
+## group more to stay in budget). Null if nothing is left to draw.
+func _coarse_mesh(def_id: String, f: int) -> Mesh:
+	var def: ObjectDef = project.defs.get(def_id)
+	if def == null or def.grid.is_empty():
+		return null
+	var box := BurstEffect.voxel_box(def.grid, f)
+	var c: int = box.c
+	var dims: Vector3i = box.dims
+	var lo: Vector3i = box.origin / c
+	var cells: PackedByteArray = box.cells
+	var raw := {}
+	for z in dims.z:
+		for y in dims.y:
+			var row := dims.x * (y + dims.y * z)
+			for x in dims.x:
+				var v := cells[row + x]
+				if v == 0:
+					continue
+				var p := lo + Vector3i(x, y, z)
+				var key := VoxelGrid.chunk_of(p)
+				var data: PackedByteArray = raw.get(key, PackedByteArray())
+				if data.is_empty():
+					data.resize(VoxelGrid.VOLUME)
+					raw[key] = data
+				data[VoxelGrid.index(p.x & VoxelGrid.MASK, p.y & VoxelGrid.MASK, p.z & VoxelGrid.MASK)] = v
+	var grid := VoxelGrid.new()
+	for key in raw:
+		grid.set_chunk(key, raw[key])
+	var list := []
+	for key in grid.keys():
+		var built := Mesher.build(grid, key, project.palette, project.voxel_size * def.unit * c)
+		if not built.is_empty():
+			list.append(built.arrays)
+	return InstanceRenderer.merge(list)
 
 
 ## Bounds of a definition's allocated chunks, in its local metres.

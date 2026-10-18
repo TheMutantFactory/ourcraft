@@ -41,6 +41,7 @@ func _run() -> void:
 	test_loads_and_converts_v1_folder()
 	test_loads_hand_formatted_objects_json()
 	test_outline_builds_rows_lazily()
+	test_instance_lod_cells()
 	test_corner_reparent()
 	test_reparent_keeps_world_position()
 	test_remove_and_prune()
@@ -516,6 +517,74 @@ func _test_view(p: Project) -> WorldView:
 	view.set_project(p)
 	view.flush()
 	return view
+
+
+## Many copies spread far apart are split into cells, each drawing full
+## detail nearby and coarse meshes further out (InstanceRenderer LOD).
+func test_instance_lod_cells() -> void:
+	var p := Project.create_empty(0.01)
+	var tent := p.create_def("Tent", 10)
+	# Checkered, so greedy meshing can't merge faces but the coarse levels can.
+	for x in 20:
+		for z in 20:
+			tent.grid.fill_box(Vector3i(x, 0, z), Vector3i(x + 1, 12 + (x + z) % 2 * 6, z + 1), 5 + (x + z) % 2)
+	for i in 200:
+		p.add_instance(p.root_id, tent.id, Vector3i(i * 500, 0, (i % 3) * 300), i % 4)
+	var view := _test_view(p)
+	var r := view._renderer
+	# Detail meshes are built once the chunk meshes have settled.
+	r._process(InstanceRenderer.LOD_REBUILD_DELAY + 0.1)
+	check(r.drawn_placements().size() == 200, "all 200 copies are drawn live (%d)" % r.drawn_placements().size())
+	check(r.cell_count() >= 4, "copies 1 km apart are split into cells (%d)" % r.cell_count())
+	var g: Dictionary = r._groups.values()[0]
+	var ranges: Array = g.ranges
+	check(ranges.size() == 3, "full detail and two coarse levels (%d)" % ranges.size())
+	var joined: bool = ranges[0][0] == 0.0
+	for k in range(1, ranges.size()):
+		joined = joined and ranges[k][0] == ranges[k - 1][1] and ranges[k][1] > ranges[k][0]
+	check(joined, "detail levels follow on from each other: %s" % [ranges])
+	check(ranges[-1][1] >= 2.0 * InstanceRenderer.PIXELS_PER_RADIAN / InstanceRenderer.OBJECT_PIXELS,
+		"the coarsest level lasts until the 2 m object is a couple of pixels")
+	var full := 0
+	for key in view._meshes[tent.id]:
+		full += view._meshes[tent.id][key].mesh.get_faces().size()
+	var coarse := r._level_mesh(tent.id, 4)
+	check(coarse != null and coarse.get_faces().size() < full, "the coarse mesh is simpler than the full one")
+	check(coarse != null and coarse.get_aabb().size.is_equal_approx(Vector3(2.0, 2.0, 2.0)),
+		"the coarse mesh covers the object (%s)" % [coarse.get_aabb() if coarse else null])
+	# Every copy is in exactly one cell, at its own world transform.
+	var seen := {}
+	var placed := true
+	for c in g.cells.values():
+		check(c.levels.size() == 3 and c.nodes.is_empty(), "each cell has one node per detail level")
+		var mmi: MultiMeshInstance3D = c.levels[0]
+		check(is_equal_approx(mmi.visibility_range_end, ranges[0][1]), "full-detail nodes stop at the first range")
+		check(mmi.multimesh.mesh.get_faces().size() == full, "full detail is the object's chunk meshes merged")
+		for slot in c.members.size():
+			var i: int = c.members[slot]
+			seen[i] = int(seen.get(i, 0)) + 1
+			# The headless renderer doesn't keep MultiMesh data, so read the
+			# buffer it was given.
+			var buf: PackedFloat32Array = c.buffer
+			var o: int = slot * 12
+			var basis := Basis(Vector3(buf[o], buf[o + 4], buf[o + 8]), Vector3(buf[o + 1], buf[o + 5], buf[o + 9]),
+				Vector3(buf[o + 2], buf[o + 6], buf[o + 10]))
+			var t := mmi.transform * Transform3D(basis, Vector3(buf[o + 3], buf[o + 7], buf[o + 11]))
+			placed = placed and t.is_equal_approx(view._placements[i].xform)
+	check(seen.size() == 200 and seen.values().max() == 1, "every copy is in exactly one cell")
+	check(placed, "copies are drawn at their world transforms")
+	# Editing the object rebuilds its coarse meshes once edits settle.
+	var before := r.node_count()
+	tent.grid.fill_box(Vector3i(0, 18, 0), Vector3i(20, 24, 20), 7)
+	p.voxels_changed.emit(tent.id, [Vector3i.ZERO])
+	view.flush()
+	check(r._stale.has(tent.id), "an edit marks the detail meshes stale")
+	r._process(InstanceRenderer.LOD_REBUILD_DELAY + 0.1)
+	var rebuilt := r._level_mesh(tent.id, 4)
+	check(not r._stale.has(tent.id) and rebuilt != null and rebuilt.get_aabb().size.y > 2.1,
+		"coarse meshes are rebuilt with the edit")
+	check(r.node_count() == before, "rebuilding keeps one node per cell and level")
+	view.free()
 
 
 func test_corner_reparent() -> void:

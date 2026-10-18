@@ -209,11 +209,41 @@ block depths are used.
 **Measured (2026-10-18, M1 Pro, 2720×1710).** Generating takes 3.4 s and
 peaks at 0.8 GB. In game: 5,203 baked regions, 22,931 placements, 17,069
 of them live (the camp items each have hundreds of copies, so they're
-MultiMeshes). **8 fps** at ground level and close-up, 18 fps from 900 m up.
-The same city with no camps (`--density=0`) runs at **67 fps**. Every camp
-item is drawn at full detail at every distance, so the next step is
-distance level-of-detail: per-region MultiMeshes with visibility ranges,
-and coarser meshes (or none) for far camps.
+MultiMeshes).
+
+| View (`--fly --pose=…`) | Before distance LOD | With distance LOD |
+|---|---|---|
+| Spawn at Center Camp (`-2,0.2,3,0,0`) | 8 fps, 215 M triangles | **116 fps**, 3.2 M |
+| Over the 3:00 camps (`880,25,40,-90,-25`) | 8 fps, 215 M | **71 fps**, 8.6 M |
+| Whole city from 900 m (`0,900,2400,0,-40`) | 18 fps, 44 M | **71 fps**, 2.0 M |
+
+The same city with no camps (`--density=0`) ran at 67 fps before LOD.
+
+**Distance LOD** (`InstanceRenderer`). Before, every copy of a camp item
+was drawn at full detail from anywhere in the city: one city-wide
+MultiMesh per object, which can't be culled. Now groups of 16 or more
+copies are split into 256 m cells. Each cell draws its copies with one
+MultiMesh per detail level, switched by Godot visibility ranges:
+
+- **Full detail:** the object's chunk meshes merged into one.
+- **Coarse levels:** its voxels grouped 4³ and then 16³ into one, in the
+  most common colour (`BurstEffect.voxel_box`, native).
+- **Nothing**, once the whole object would be about 2 px tall.
+
+A level is used until its voxels would be 1.5 px tall, plus ¾ of a cell
+of margin because ranges are measured to the cell. Edits rebuild the
+merged and coarse meshes once an object has been left alone for 0.5 s.
+
+**Found along the way:**
+
+- With one MultiMesh per chunk per cell (14,332 nodes), Metal silently
+  rendered whole frames black, HUD included, with no error. Merging each
+  object's chunks brought it down to 2,238 nodes, which is fine.
+- `--shot` captures are black, and the game is throttled to a few fps,
+  while its window is behind other windows: macOS stops presenting
+  occluded Metal windows. Keep the window in front when measuring.
+
+`--shot` runs now also print draw calls, objects and triangles per frame.
 
 ## What these found (2026-10-17)
 
