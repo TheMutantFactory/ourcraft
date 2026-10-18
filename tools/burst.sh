@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The burst scenario: platforms with gradient-coloured words that burst into
-# flying cubes. Runs on its own scratch project (only saved with Ctrl+S).
+# flying pieces. Runs on its own scratch project (only saved with Ctrl+S).
 #   tools/burst.sh                 watch it (B bursts the selected/aimed object)
 #   tools/burst.sh --soak=60       run 60 s, check invariants, report, quit
 set -euo pipefail

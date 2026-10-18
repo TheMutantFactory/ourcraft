@@ -92,7 +92,7 @@ func _ready() -> void:
 		else:
 			player.global_position = Vector3(0, 0.2, 0)
 			player.set_pitch(deg_to_rad(8))
-			hud.toast("Burst scenario: words burst into cubes. B bursts the selected or aimed object.", 6.0)
+			hud.toast("Burst scenario: words burst into pieces. B bursts the selected or aimed object.", 6.0)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_run_debug_args()
 
@@ -799,7 +799,7 @@ func _new_object() -> void:
 	hud.toast("Created %s with %s blocks — you're editing it now. Backspace when done." % [def.name, _cm(want)], 5.0)
 
 
-## Bursts the object at path into flying cubes and removes it. Undoable
+## Bursts the object at path into flying pieces and removes it. Undoable
 ## in normal play; in a scenario (undo off) objects only it used are
 ## deleted too.
 func _burst(path: PackedStringArray) -> void:
@@ -812,7 +812,7 @@ func _burst(path: PackedStringArray) -> void:
 	var nm: String = project.defs[inst.def_id].name
 	view.flush()
 	var parts := BurstEffect.collect(project, view, path)
-	if not parts.points.is_empty():
+	if not parts.pieces.is_empty():
 		var fx := BurstEffect.new()
 		add_child(fx)
 		fx.setup(parts, 3.5)
@@ -822,8 +822,8 @@ func _burst(path: PackedStringArray) -> void:
 	else:
 		project.remove_and_prune(parent.id, inst.id)
 	selected = null
-	var chunk_note := "" if parts.chunk == 1 else " of %d³ blocks" % parts.chunk
-	hud.toast("Burst %s into %d cubes%s%s" % [nm, parts.points.size(), chunk_note,
+	var chunk_note := "" if parts.chunk == 1 else " (grouped into %d³ blocks)" % parts.chunk
+	hud.toast("Burst %s into %d pieces%s%s" % [nm, parts.pieces.size(), chunk_note,
 		" (Ctrl+Z to undo)" if project.recording else ""], 3.0)
 
 

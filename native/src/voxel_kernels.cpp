@@ -7,6 +7,7 @@
 #include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/packed_vector3_array.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <vector>
@@ -146,6 +147,46 @@ P to_packed(const std::vector<T> &src) {
 	return out;
 }
 
+// Small fast generator for the slicer (splitmix64).
+struct Rng {
+	uint64_t state;
+	uint64_t next() {
+		uint64_t z = (state += 0x9e3779b97f4a7c15ULL);
+		z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+		z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+		return z ^ (z >> 31);
+	}
+	int64_t below(int64_t n) { return (int64_t)(next() % (uint64_t)n); }
+};
+
+// Grows the frontier cells' labels into unlabelled solid neighbours,
+// picking the next cell to grow from at random.
+void grow(const uint8_t *cells, int64_t sx, int64_t sy, int64_t sz, int32_t *labels,
+		std::vector<int64_t> &frontier, Rng &rng) {
+	const int64_t sxy = sx * sy;
+	while (!frontier.empty()) {
+		const size_t j = (size_t)rng.below((int64_t)frontier.size());
+		const int64_t i = frontier[j];
+		frontier[j] = frontier.back();
+		frontier.pop_back();
+		const int32_t label = labels[i];
+		const int64_t x = i % sx;
+		const int64_t y = (i / sx) % sy;
+		const int64_t z = i / sxy;
+		const int64_t nbs[6] = {
+			x > 0 ? i - 1 : -1, x < sx - 1 ? i + 1 : -1,
+			y > 0 ? i - sx : -1, y < sy - 1 ? i + sx : -1,
+			z > 0 ? i - sxy : -1, z < sz - 1 ? i + sxy : -1,
+		};
+		for (int64_t nb : nbs) {
+			if (nb >= 0 && cells[nb] != 0 && labels[nb] < 0) {
+				labels[nb] = label;
+				frontier.push_back(nb);
+			}
+		}
+	}
+}
+
 } // namespace
 
 void VoxelKernels::_bind_methods() {
@@ -153,6 +194,10 @@ void VoxelKernels::_bind_methods() {
 			&VoxelKernels::fill_chunk);
 	ClassDB::bind_method(D_METHOD("mesh_chunk", "input", "key", "palette", "cell_m"),
 			&VoxelKernels::mesh_chunk);
+	ClassDB::bind_method(D_METHOD("gather_box", "box", "dims", "olo", "c", "datas", "bases"),
+			&VoxelKernels::gather_box);
+	ClassDB::bind_method(D_METHOD("slice_pieces", "cells", "dims", "seeds", "max_pieces", "rng_seed"),
+			&VoxelKernels::slice_pieces);
 }
 
 Array VoxelKernels::fill_chunk(const PackedByteArray &data, const Vector3i &lmin, const Vector3i &lmax,
@@ -304,6 +349,112 @@ Dictionary VoxelKernels::mesh_chunk(const Array &input, const Vector3i &key, con
 	Dictionary result;
 	result["arrays"] = arrays;
 	result["faces"] = to_packed<Vector3, PackedVector3Array>(out.faces);
+	return result;
+}
+
+PackedByteArray VoxelKernels::gather_box(const PackedByteArray &box, const Vector3i &dims,
+		const Vector3i &olo, int64_t c, const Array &datas, const Array &bases) {
+	PackedByteArray result = box;
+	const int64_t sx = dims.x, sy = dims.y, sz = dims.z;
+	if (result.size() != sx * sy * sz || c < 1 || c > S || (c & (c - 1)) != 0) {
+		return result;
+	}
+	uint8_t *out = result.ptrw();
+	uint32_t votes[256];
+	for (int64_t k = 0; k < datas.size() && k < bases.size(); k++) {
+		const PackedByteArray data = datas[k];
+		const Vector3i base = bases[k];
+		if (data.size() != VOLUME) {
+			continue;
+		}
+		const uint8_t *cells = data.ptr();
+		// Coarse cells never straddle chunks: both are aligned powers of two.
+		for (int z = 0; z < S; z += (int)c) {
+			for (int y = 0; y < S; y += (int)c) {
+				for (int x = 0; x < S; x += (int)c) {
+					uint8_t best = 0;
+					if (c == 1) {
+						best = cells[index(x, y, z)];
+					} else {
+						std::memset(votes, 0, sizeof(votes));
+						uint32_t best_n = 0;
+						for (int dz = 0; dz < c; dz++) {
+							for (int dy = 0; dy < c; dy++) {
+								const uint8_t *row = cells + index(x, y + dy, z + dz);
+								for (int dx = 0; dx < c; dx++) {
+									const uint8_t v = row[dx];
+									// Ties go to the first value to reach the count.
+									if (v != 0 && ++votes[v] > best_n) {
+										best_n = votes[v];
+										best = v;
+									}
+								}
+							}
+						}
+					}
+					if (best == 0) {
+						continue;
+					}
+					const int64_t qx = (base.x + x) / c - olo.x;
+					const int64_t qy = (base.y + y) / c - olo.y;
+					const int64_t qz = (base.z + z) / c - olo.z;
+					if (qx < 0 || qy < 0 || qz < 0 || qx >= sx || qy >= sy || qz >= sz) {
+						continue;
+					}
+					out[qx + sx * (qy + sy * qz)] = best;
+				}
+			}
+		}
+	}
+	return result;
+}
+
+Array VoxelKernels::slice_pieces(const PackedByteArray &cells, const Vector3i &dims, int64_t seeds,
+		int64_t max_pieces, int64_t rng_seed) {
+	const int64_t n = cells.size();
+	PackedInt32Array labels;
+	labels.resize(n);
+	int32_t *lab = labels.ptrw();
+	std::fill(lab, lab + n, -1);
+	Array result;
+	if (n != (int64_t)dims.x * dims.y * dims.z) {
+		result.append(labels);
+		result.append(0);
+		return result;
+	}
+	const uint8_t *c = cells.ptr();
+	std::vector<int64_t> solid;
+	for (int64_t i = 0; i < n; i++) {
+		if (c[i] != 0) {
+			solid.push_back(i);
+		}
+	}
+	int32_t count = 0;
+	if (!solid.empty()) {
+		Rng rng{ (uint64_t)rng_seed };
+		std::vector<int64_t> frontier;
+		const int64_t want = std::min(seeds, max_pieces);
+		for (int64_t k = 0; k < want; k++) {
+			const int64_t i = solid[(size_t)rng.below((int64_t)solid.size())];
+			if (lab[i] < 0) {
+				lab[i] = count++;
+				frontier.push_back(i);
+			}
+		}
+		grow(c, dims.x, dims.y, dims.z, lab, frontier, rng);
+		for (int64_t i : solid) {
+			if (lab[i] < 0) {
+				if (count < max_pieces) {
+					count++;
+				}
+				lab[i] = count - 1;
+				frontier.push_back(i);
+				grow(c, dims.x, dims.y, dims.z, lab, frontier, rng);
+			}
+		}
+	}
+	result.append(labels);
+	result.append(count);
 	return result;
 }
 
