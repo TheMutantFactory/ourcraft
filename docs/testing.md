@@ -10,6 +10,7 @@
 | `tools/hole.sh` | The hole scenario: a watchable soak test of creating and deleting object trees. |
 | `tools/burst.sh` | The burst scenario: gradient words on platforms burst into flying pieces. |
 | `tools/black-rock-city.sh` | A roughly 1:1 Black Rock City: kilometres of roads, thousands of instanced camps. |
+| `tools/brc-tour.sh` | A cube walks every Black Rock City intersection once, leaving a gradient trail. |
 
 ## Tree fuzzing
 
@@ -244,6 +245,33 @@ merged and coarse meshes once an object has been left alone for 0.5 s.
   occluded Metal windows. Keep the window in front when measuring.
 
 `--shot` runs now also print draw calls, objects and triangles per frame.
+
+## Road tour
+
+```bash
+tools/brc-tour.sh                        # watch: [ ] speed, P pause, mouse orbits, V camera
+tools/brc-tour.sh --speed=80             # m/s; default 20 (about 54 minutes)
+tools/brc-tour.sh --soak=30 --speed=320  # run 30 s, check, report, quit
+```
+
+For no good reason: the player becomes a cube (third person, also V in
+normal play) and walks from Center Camp along a Hamiltonian path of Black
+Rock City's street grid. It visits all 204 intersections of a radial and an
+annular street exactly once and only moves along streets (`RoadTour.route`):
+
+1. Out to 6:00 & Esplanade, then along the Esplanade to 2:00.
+2. Back and forth over A–K between 2:00 and 6:00.
+3. Back and forth over K down to the Esplanade between 6:30 and 10:00.
+
+That's 64.5 km. Behind it, a 10 cm dot every metre fades from magenta
+through red, orange and yellow to chartreuse over the whole walk (hue,
+not RGB, so the middle stays bright). The dots are MultiMesh instances,
+4,096 per node, not voxels, so they don't touch the project.
+
+The street grid comes from `environment.roads` in the city's manifest,
+which `tools/black-rock-city.sh` writes; `brc-tour.sh` rebuilds the city
+if it's missing. A 30 s soak at 320 m/s (2026-10-18): 41 intersections,
+9.6 km, 9,601 dots, 62 fps, all checks passed.
 
 ## What these found (2026-10-17)
 

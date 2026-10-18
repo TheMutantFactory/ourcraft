@@ -18,7 +18,7 @@ var player: Player
 var hud: Hud
 var overlay: Overlay
 var tree_lines: TreeLines
-## The running scenario (HoleScenario, BurstScenario), if any.
+## The running scenario (HoleScenario, BurstScenario, RoadTour), if any.
 var scenario: Scenario
 var _scenery: Node3D
 var _hole := 0.0
@@ -80,6 +80,8 @@ func _ready() -> void:
 			scenario = HoleScenario.new()
 		"burst":
 			scenario = BurstScenario.new()
+		"tour":
+			scenario = RoadTour.new()
 	if scenario != null:
 		add_child(scenario)
 		scenario.attach(self, project, view)
@@ -91,10 +93,12 @@ func _ready() -> void:
 			player.global_position = Vector3(0, 0.2, HoleScenario.HOLE * 0.5 + 6.0)
 			player.set_pitch(deg_to_rad(20))
 			hud.toast("Hole scenario: clouds drop word trees into the hole. Undo is off.", 6.0)
-		else:
+		elif scenario is BurstScenario:
 			player.global_position = Vector3(0, 0.2, 0)
 			player.set_pitch(deg_to_rad(8))
 			hud.toast("Burst scenario: words burst into pieces. B bursts the selected or aimed object.", 6.0)
+		else:
+			hud.toast("Road tour: every intersection once, from Center Camp. [ ] speed · P pause · mouse orbits", 8.0)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_run_debug_args()
 
@@ -631,6 +635,9 @@ func _on_key(event: InputEventKey) -> void:
 			tree_lines.visible = not tree_lines.visible
 			tree_lines.mark_dirty()
 			hud.toast("Relationship lines on" if tree_lines.visible else "Relationship lines off")
+		KEY_V:
+			player.set_third_person(not player.third_person)
+			hud.toast("Third person" if player.third_person else "First person")
 		KEY_T:
 			on_surface = not on_surface
 			hud.toast("Placing on the surface" if on_surface else "Placing on the brush grid")

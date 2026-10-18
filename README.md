@@ -69,8 +69,9 @@ Sources are listed in [docs/bibliography.md](docs/bibliography.md). For the
 synthetic tree world, the tree fuzzer, the hole scenario (`tools/hole.sh`:
 clouds drop word trees into a hole that destroys what touches it) and the
 burst scenario (`tools/burst.sh`: gradient words burst into flying pieces),
-and a roughly 1:1 Black Rock City for testing distance and scale
-(`tools/black-rock-city.sh`), see [docs/testing.md](docs/testing.md).
+a roughly 1:1 Black Rock City for testing distance and scale
+(`tools/black-rock-city.sh`) and a cube touring all of its intersections
+(`tools/brc-tour.sh`), see [docs/testing.md](docs/testing.md).
 
 ## Concepts
 
@@ -94,6 +95,7 @@ and a roughly 1:1 Black Rock City for testing distance and scale
 | --- | --- |
 | WASD, Space, Shift | Move, jump, sprint |
 | F | Toggle flying (Space/Shift go up/down) |
+| V | Toggle third person (you become a cube) |
 | `,` `.` | Shrink/grow yourself (0.05×–2×) for fine work |
 | Left / right / middle click | Break / place / pick colour |
 | 1–0, mouse wheel | Colour, brush size (1–100 cm) |

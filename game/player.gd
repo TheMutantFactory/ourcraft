@@ -3,6 +3,10 @@ extends CharacterBody3D
 ## First-person walker/flyer. The player can be resized so that 1 cm work is
 ## comfortable: at 0.1x the player is 18 cm tall and a centimetre block is a
 ## sensible step.
+##
+## In third person (V) the player is drawn as a cube and the camera follows
+## from behind. Something else (RoadTour) can drive the player: it then
+## ignores movement keys, and the mouse orbits the camera instead of turning.
 
 const HEIGHT := 1.8
 const RADIUS := 0.3
@@ -14,6 +18,11 @@ const GRAVITY := 24.0
 const JUMP_HEIGHT := 1.15
 const STEP := 0.35
 const SCALES := [0.05, 0.1, 0.25, 0.5, 1.0, 2.0]
+## The cube's edge, and the third-person camera's distance behind the eyes
+## and height above them (all at 1x).
+const CUBE := 0.8
+const FOLLOW := 6.0
+const FOLLOW_UP := 1.6
 
 var camera: Camera3D
 var flying := false
@@ -22,6 +31,15 @@ var mouse_sensitivity := 0.0025
 var _shape: CapsuleShape3D
 var _col: CollisionShape3D
 var _pitch := 0.0
+var third_person := false
+## Moved by something else: movement keys do nothing.
+var driven := false
+## Third-person camera distance behind and height above the eyes (at 1x).
+var follow := FOLLOW
+var follow_up := FOLLOW_UP
+var _cube: MeshInstance3D
+## Camera yaw around the player while driven (the body faces the way it goes).
+var _orbit := 0.0
 
 
 func _ready() -> void:
@@ -32,6 +50,14 @@ func _ready() -> void:
 	camera = Camera3D.new()
 	camera.fov = 75.0
 	add_child(camera)
+	_cube = MeshInstance3D.new()
+	var box := BoxMesh.new()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color("#ff8a1e")
+	box.material = mat
+	_cube.mesh = box
+	_cube.visible = false
+	add_child(_cube)
 	floor_max_angle = deg_to_rad(50)
 	set_size(1.0)
 
@@ -41,7 +67,9 @@ func set_size(f: float) -> void:
 	_shape.radius = RADIUS * f
 	_shape.height = HEIGHT * f
 	_col.position = Vector3(0, HEIGHT * f * 0.5, 0)
-	camera.position = Vector3(0, EYE * f, 0)
+	(_cube.mesh as BoxMesh).size = Vector3.ONE * CUBE * f
+	_cube.position = Vector3(0, CUBE * f * 0.5, 0)
+	_place_camera()
 	camera.near = clampf(0.05 * f, 0.002, 0.05)
 	floor_snap_length = 0.2 * f
 	safe_margin = clampf(0.001 * f, 0.0002, 0.001)
@@ -52,18 +80,45 @@ func reach() -> float:
 
 
 func look(relative: Vector2) -> void:
-	rotate_y(-relative.x * mouse_sensitivity)
+	if driven:
+		_orbit -= relative.x * mouse_sensitivity
+	else:
+		rotate_y(-relative.x * mouse_sensitivity)
 	_pitch = clampf(_pitch - relative.y * mouse_sensitivity, -PI / 2 + 0.01, PI / 2 - 0.01)
-	camera.rotation.x = _pitch
+	_place_camera()
 
 
 ## Sets the look angle (radians, positive looks up).
 func set_pitch(p: float) -> void:
 	_pitch = clampf(p, -PI / 2 + 0.01, PI / 2 - 0.01)
-	camera.rotation.x = _pitch
+	_place_camera()
+
+
+func set_third_person(on: bool) -> void:
+	third_person = on
+	_cube.visible = on
+	_orbit = 0.0
+	_place_camera()
+
+
+## First person: at the eyes. Third person: behind and above the cube,
+## turned by the pitch (and orbit), kept above the ground.
+func _place_camera() -> void:
+	var eye := Vector3(0, EYE * size, 0)
+	var look_basis := Basis(Vector3.UP, _orbit) * Basis(Vector3.RIGHT, _pitch)
+	camera.basis = look_basis
+	if not third_person:
+		camera.position = eye
+		return
+	var p := eye + Vector3(0, follow_up * size, 0) + look_basis * Vector3(0, 0, follow * size)
+	p.y = maxf(p.y, 0.15 * size)
+	camera.position = p
 
 
 func _physics_process(delta: float) -> void:
+	if driven:
+		velocity = Vector3.ZERO
+		return
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 	var input := Vector2.ZERO
 	if captured:

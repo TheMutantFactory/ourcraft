@@ -65,6 +65,11 @@ func _init() -> void:
 		"ground_size": 6000, "ground_color": "#d9c9a6", "ground_line_color": "#cbb995",
 		"ground_y": -0.02, "fog_density": 0.00018, "far": 7000,
 		"spawn": [center_camp.x, 0.3, center_camp.z - CENTER_CAMP_RING - 20, 0],
+		# The street grid, for RoadTour: centre radii of the Esplanade and
+		# A–K (metres), radials from 2:00 to 10:00 every half hour (clock
+		# hours: 12:00 is -Z, 3:00 is +X), and Center Camp.
+		"roads": {"rings": rings, "names": STREETS, "letters": LETTERS,
+			"hours": [2.0, 10.0, 0.5], "center_camp": [center_camp.x, center_camp.z]},
 	}
 
 	var world := project.root()

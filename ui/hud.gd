@@ -142,7 +142,7 @@ func _ready() -> void:
 
 
 const HELP := """WASD move · Space jump · Shift sprint
-F fly (Space / Shift up and down)
+F fly (Space / Shift up and down) · V third person
 Left click break · Right click place
 Middle click pick colour · 1–0 colour
 Scroll brush size · T surface / grid placing
