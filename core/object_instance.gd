@@ -55,6 +55,14 @@ static func snap_scale(s: float) -> float:
 	return clampf(pow(2.0, roundf(log(s) / log(2.0))), MIN_SCALE, MAX_SCALE)
 
 
+## Nearest power of two, without the per-copy limits: a copy's world scale
+## multiplies the scales above it, so it can be far outside 1/64..64.
+static func snap_scale_any(s: float) -> float:
+	if not (s > 0.0):
+		return 1.0
+	return pow(2.0, roundf(log(s) / log(2.0)))
+
+
 ## A scale as people read it: 1/16, 1, 4.
 static func scale_label(s: float) -> String:
 	if s >= 1.0:

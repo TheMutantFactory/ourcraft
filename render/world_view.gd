@@ -30,9 +30,10 @@ const BAKE_BUDGET_USEC := 6000
 var project: Project
 var material: ShaderMaterial
 
-## def_id -> {Vector3i key -> {"mesh": ArrayMesh or null, "shape":
-## ConcavePolygonShape3D or null, "users": bodies using the shape}}. Every
-## allocated chunk has an entry once processed.
+## def_id -> {Vector3i key -> {"mesh": ArrayMesh or null, "shapes":
+## {face scale -> {"shape": ConcavePolygonShape3D, "users": bodies using
+## it}}}}. Every allocated chunk has an entry once processed. Collision
+## shapes are built at each upward scale a copy needs (see _shape_for).
 var _meshes: Dictionary = {}
 ## def_id -> true for objects with at least one live placement.
 var _live_defs: Dictionary = {}
@@ -175,7 +176,7 @@ func _needs_geometry(def_id: String, key: Vector3i) -> bool:
 	if _live_defs.has(def_id):
 		return true
 	var entry = _meshes.get(def_id, {}).get(key)
-	return entry != null and entry.shape != null
+	return entry != null and not entry.shapes.is_empty()
 
 
 func _build(def: ObjectDef, key: Vector3i) -> Dictionary:
@@ -272,12 +273,12 @@ func _apply(def_id: String, key: Vector3i, built: Dictionary) -> void:
 	var entry = entries.get(key)
 	var fresh: bool = entry == null
 	if fresh:
-		entry = {"mesh": null, "shape": null, "users": 0}
+		entry = {"mesh": null, "shapes": {}}
 		entries[key] = entry
 	if _live_defs.has(def_id):
 		_set_mesh(def_id, key, entry, built)
-	if entry.shape != null:
-		entry.shape.set_faces(built.get("faces", PackedVector3Array()))
+	for sc in entry.shapes:
+		entry.shapes[sc].shape.set_faces(_scaled_faces(built.get("faces", PackedVector3Array()), sc))
 	_baker.def_changed(def_id)
 	if fresh:
 		collision.update_def(def_id)
@@ -300,33 +301,46 @@ func _set_mesh(def_id: String, key: Vector3i, entry: Dictionary, built: Dictiona
 		_renderer.chunk_added(def_id, key, mesh)
 
 
-## Collision shape for a chunk, built on first use (CollisionField callback).
-func _shape_for(def_id: String, key: Vector3i) -> Shape3D:
+## Collision shape for a chunk with its triangles scaled up by sc (>= 1),
+## built on first use (CollisionField callback; see
+## CollisionField.face_scale for why only upward). Copies at the same scale
+## share one shape.
+func _shape_for(def_id: String, key: Vector3i, sc := 1.0) -> Shape3D:
 	var entry = _meshes.get(def_id, {}).get(key)
 	var def: ObjectDef = project.defs.get(def_id)
 	if entry == null or def == null:
 		return null
-	if entry.shape == null:
+	var slot = entry.shapes.get(sc)
+	if slot == null:
 		var built := _build(def, key)
 		if built.is_empty():
 			return null
 		var shape := ConcavePolygonShape3D.new()
 		shape.backface_collision = true
-		shape.set_faces(built.faces)
-		entry.shape = shape
-	entry.users += 1
-	return entry.shape
+		shape.set_faces(_scaled_faces(built.faces, sc))
+		slot = {"shape": shape, "users": 0}
+		entry.shapes[sc] = slot
+	slot.users += 1
+	return slot.shape
+
+
+static func _scaled_faces(faces: PackedVector3Array, sc: float) -> PackedVector3Array:
+	if sc == 1.0:
+		return faces
+	return Transform3D(Basis.from_scale(Vector3.ONE * sc), Vector3.ZERO) * faces
 
 
 ## A body stopped using a chunk's shape; drop the shape when none do.
-func _release_shape(def_id: String, key: Vector3i) -> void:
+func _release_shape(def_id: String, key: Vector3i, sc := 1.0) -> void:
 	var entry = _meshes.get(def_id, {}).get(key)
 	if entry == null:
 		return
-	entry.users -= 1
-	if entry.users <= 0:
-		entry.users = 0
-		entry.shape = null
+	var slot = entry.shapes.get(sc)
+	if slot == null:
+		return
+	slot.users -= 1
+	if slot.users <= 0:
+		entry.shapes.erase(sc)
 
 
 ## Mesh arrays for baking (RegionBaker callback); null if nothing visible.

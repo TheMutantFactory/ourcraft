@@ -67,6 +67,9 @@ func _run() -> void:
 	test_toolbar_rows()
 	test_panel_window()
 	test_copy_scale()
+	test_scale_each_level_moves_whole_subtree()
+	test_scale_compound_levels_view_and_collision()
+	test_scale_random_ops_keep_derived_data_true()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -1268,3 +1271,319 @@ func test_copy_scale() -> void:
 	var kit_inst: ObjectInstance = house.children[0]
 	p.set_instance_scale(house.id, kit_inst.id, 2.0)
 	check(Thumbnailer.signature(p, house.id) != s0, "scaling a nested copy changes the parent's picture")
+
+
+
+# --- Scale robustness --------------------------------------------------------
+# A deep tree with rotations, mixed block sizes and shared objects. Scaling a
+# copy must carry every object below it (and nothing else), and everything
+# derived from the tree (bounds cache, the view's placements, collision
+# bodies, undo, saved files) must agree with a fresh calculation.
+
+## World -> A(10 cm, x2 copies) -> B(5 cm, turned) -> C(2 cm, x2) -> D(1 cm,
+## turned) -> E(1 cm). D is also placed directly in A, so it's shared across
+## levels. Returns {project, ids: {name: def id}}.
+func _scale_tree() -> Dictionary:
+	var p := Project.create_empty(0.01)
+	var d := {}
+	for spec in [["A", 10, 1], ["B", 5, 2], ["C", 2, 3], ["D", 1, 4], ["E", 1, 5]]:
+		var def := p.create_def(spec[0], spec[1])
+		# An L shape, so rotation and position errors change the bounds.
+		def.grid.fill_box(Vector3i(0, 0, 0), Vector3i(6, 2, 3), spec[2])
+		def.grid.fill_box(Vector3i(0, 2, 0), Vector3i(2, 5, 3), spec[2])
+		d[spec[0]] = def.id
+	p.add_instance(d.D, d.E, Vector3i(3, 5, 1), 0)
+	p.add_instance(d.C, d.D, Vector3i(4, 4, 2), 3)
+	p.add_instance(d.B, d.C, Vector3i(10, 10, 0), 0)
+	p.add_instance(d.B, d.C, Vector3i(-14, 10, 6), 2)
+	p.add_instance(d.A, d.B, Vector3i(20, 20, 10), 1)
+	p.add_instance(d.A, d.D, Vector3i(-30, 20, 0), 1)
+	p.add_instance(p.root_id, d.A, Vector3i(0, 0, 0), 0)
+	p.add_instance(p.root_id, d.A, Vector3i(500, 0, 300), 2)
+	# Building the tree isn't part of the history the tests undo through.
+	p.set_recording(false)
+	p.set_recording(true)
+	return {"project": p, "ids": d}
+
+
+## Every path in the tree, depth first (the world is the empty path).
+func _all_paths(p: Project) -> Array:
+	var out := []
+	var stack := [[p.root_id, PackedStringArray()]]
+	while not stack.is_empty():
+		var top: Array = stack.pop_back()
+		out.append(top[1])
+		for inst in p.defs[top[0]].children:
+			var c: PackedStringArray = top[1].duplicate()
+			c.append(inst.id)
+			stack.append([inst.def_id, c])
+	return out
+
+
+func _world_of_all(p: Project) -> Dictionary:
+	var out := {}
+	for path in _all_paths(p):
+		out["/".join(path)] = p.path_transform(path)
+	return out
+
+
+## Bounds of an object and its contents, computed from scratch (no cache).
+func _fresh_bounds(p: Project, def_id: String) -> AABB:
+	var def: ObjectDef = p.defs[def_id]
+	var has := false
+	var out := AABB()
+	if not def.grid.is_empty():
+		var g := def.grid.bounds()
+		out = AABB(g.position * def.unit, g.size * def.unit)
+		has = true
+	for inst in def.children:
+		var cb := _fresh_bounds(p, inst.def_id)
+		if cb.size == Vector3.ZERO:
+			continue
+		cb = inst.local_transform() * cb
+		out = cb if not has else out.merge(cb)
+		has = true
+	return out
+
+
+## A collision body carries its copy's rotation and position; growing is in
+## its shape's triangles and shrinking in its shape transform (see
+## CollisionField.face_scale), together exactly the copy's world scale.
+func _body_matches_copy(view: WorldView, k: String) -> bool:
+	var cf := view.collision
+	var rid: RID = cf._bodies[k]
+	var pl: Dictionary = cf._placements[cf._owner[rid]]
+	var xf: Transform3D = pl.xform
+	var body: Transform3D = PhysicsServer3D.body_get_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM)
+	if not body.is_equal_approx(Transform3D(xf.basis.orthonormalized(), xf.origin)):
+		return false
+	var sc: float = xf.basis.get_scale().x
+	var shrink := minf(1.0, sc)
+	var grow := maxf(1.0, sc)
+	if not PhysicsServer3D.body_get_shape_transform(rid, 0).is_equal_approx(Transform3D(Basis.from_scale(Vector3.ONE * shrink), Vector3.ZERO)):
+		return false
+	var sk: Array = cf._shape_of[k]
+	if not is_equal_approx(sk[2], grow):
+		return false
+	var shape: ConcavePolygonShape3D = view._meshes[sk[0]][sk[1]].shapes[sk[2]].shape
+	var raw: PackedVector3Array = view._build(view.project.defs[sk[0]], sk[1]).faces
+	var a := AABB(shape.get_faces()[0], Vector3.ZERO)
+	for v in shape.get_faces():
+		a = a.expand(v)
+	var b := AABB(raw[0], Vector3.ZERO)
+	for v in raw:
+		b = b.expand(v)
+	return a.position.distance_to(b.position * grow) < 1e-4 and a.size.distance_to(b.size * grow) < 1e-4
+
+
+func _aabb_close(a: AABB, b: AABB, tol := 1e-3) -> bool:
+	return a.position.distance_to(b.position) < tol and a.size.distance_to(b.size) < tol
+
+
+## Scales one copy at a time, at every level of the tree, by several
+## factors, and checks the whole subtree follows and nothing else moves.
+func test_scale_each_level_moves_whole_subtree() -> void:
+	var t := _scale_tree()
+	var p: Project = t.project
+	var levels := 0
+	var bad := []
+	for path in _all_paths(p):
+		if path.is_empty():
+			continue
+		for k in [0.5, 2.0, 0.0625, 8.0]:
+			var inst := p.instance_at(path)
+			var parent := p.def_at(path.slice(0, path.size() - 1))
+			var key := "/".join(path)
+			var before := _world_of_all(p)
+			var n_before: Transform3D = before[key]
+			var b := p.def_bounds(inst.def_id)
+			var anchor := Vector3(b.get_center().x, b.position.y, b.get_center().z)
+			var anchor_world := n_before * anchor
+			var old_scale := inst.scale
+			p.set_instance_scale(parent.id, inst.id, old_scale * k, anchor)
+			var after := _world_of_all(p)
+			var n_after: Transform3D = after[key]
+			var ok := true
+			if not is_equal_approx(inst.scale, ObjectInstance.snap_scale(old_scale * k)):
+				ok = false
+			var ratio := inst.scale / old_scale
+			# The anchor stays within one of the parent's min units.
+			var tol := p.path_scale(path.slice(0, path.size() - 1)) * 0.87 + 1e-4
+			if (n_after * anchor).distance_to(anchor_world) > tol:
+				ok = false
+			for q in before:
+				# The copy lives in its parent object, which may itself be placed
+				# several times (A is on the street twice, D is in A and in C):
+				# every path through this copy is its subtree, each relative to
+				# its own occurrence of the copy.
+				var parts: PackedStringArray = str(q).split("/") if q != "" else PackedStringArray()
+				var at := parts.find(inst.id)
+				if at >= 0:
+					var node_key := "/".join(parts.slice(0, at + 1))
+					var rel: Transform3D = (before[node_key] as Transform3D).affine_inverse() * before[q]
+					var want: Transform3D = (after[node_key] as Transform3D) * rel
+					if not (after[q] as Transform3D).is_equal_approx(want):
+						ok = false
+					if not is_equal_approx((after[q] as Transform3D).basis.get_scale().x, (before[q] as Transform3D).basis.get_scale().x * ratio):
+						ok = false
+				elif not (after[q] as Transform3D).is_equal_approx(before[q]):
+					ok = false
+			# Cached bounds agree with a fresh walk for every object.
+			for id in p.defs:
+				if not _aabb_close(p.def_bounds(id), _fresh_bounds(p, id)):
+					ok = false
+			p.undo()
+			var undone := _world_of_all(p)
+			for q in before:
+				if not (undone[q] as Transform3D).is_equal_approx(before[q]):
+					ok = false
+			if not ok:
+				bad.append("%s ×%s" % [p.path_label(path), k])
+			levels += 1
+	check(bad.is_empty(), "scaling any copy carries its whole subtree and nothing else, and undoes exactly (%d cases; bad: %s)" % [levels, ", ".join(bad.slice(0, 6))])
+	check(levels >= 4 * 12, "covered every copy at every level (%d)" % levels)
+
+
+## Scales several levels at once, so sizes multiply down the tree, then
+## checks the view, collision bodies and a save/load against the model.
+func test_scale_compound_levels_view_and_collision() -> void:
+	var t := _scale_tree()
+	var p: Project = t.project
+	var d: Dictionary = t.ids
+	# Scale A (first copy) x2, the B in it x1/4, every C x1/2, every D in C x8.
+	var a_inst: ObjectInstance = p.root().children[0]
+	p.set_instance_scale(p.root_id, a_inst.id, 2.0)
+	var b_inst: ObjectInstance = p.defs[d.A].children[0]
+	p.set_instance_scale(d.A, b_inst.id, 0.25)
+	for c in p.defs[d.B].children:
+		p.set_instance_scale(d.B, c.id, 0.5)
+	var d_in_c: ObjectInstance = p.defs[d.C].children[0]
+	p.set_instance_scale(d.C, d_in_c.id, 8.0)
+	var deepest := PackedStringArray()
+	for path in _all_paths(p):
+		if path.size() > deepest.size() or (path.size() == deepest.size() and "/".join(path) < "/".join(deepest)):
+			deepest = path
+	check(deepest.size() == 5, "tree is five copies deep")
+	var want_scale := 1.0
+	for i in deepest.size():
+		want_scale *= p.instance_at(deepest.slice(0, i + 1)).scale
+	check(is_equal_approx(p.path_scale(deepest), want_scale), "path scale is the product down the tree")
+	check(is_equal_approx(p.path_transform(deepest).basis.get_scale().x, want_scale), "the deepest object's world size is that product")
+	# E's world box is its own box scaled by the product, around its corner.
+	var e_def: ObjectDef = p.def_at(deepest)
+	var own := e_def.grid.bounds()
+	var own_units := AABB(own.position * e_def.unit, own.size * e_def.unit)
+	var world_e := p.path_transform(deepest) * own_units
+	check(is_equal_approx(world_e.size.y, own_units.size.y * want_scale), "E's height in the world is scaled by every level above it")
+	# The view draws every placement where the model says.
+	var view := _test_view(p)
+	var vs := p.voxel_size
+	var to_m := Transform3D(Basis.from_scale(Vector3.ONE * vs), Vector3.ZERO)
+	var mismatches := 0
+	for pl in view._placements:
+		var want: Transform3D = to_m * p.path_transform(pl.path) * to_m.affine_inverse()
+		if not (pl.xform as Transform3D).is_equal_approx(want):
+			mismatches += 1
+	check(view._placements.size() == _all_paths(p).size(), "the view has one placement per copy")
+	check(mismatches == 0, "the view places every scaled copy where the model does (%d off)" % mismatches)
+	# Collision: each body's effective transform (body x shape) is its
+	# placement's, scale included.
+	view.collision.focus = Vector3(2, 1, 1)
+	view.collision.radius = 60.0
+	view.collision.sync(view._meshes)
+	var bodies := 0
+	var off := 0
+	var scaled_bodies := 0
+	for k in view.collision._bodies:
+		if not _body_matches_copy(view, k):
+			off += 1
+		if view.collision._shape_of[k][2] != 1.0:
+			scaled_bodies += 1
+		bodies += 1
+	check(scaled_bodies > 0, "some bodies are for scaled copies (%d)" % scaled_bodies)
+	check(bodies >= view._placements.size() - 1, "every placement got a body (%d bodies)" % bodies)
+	check(off == 0, "every body sits and is sized where its copy is drawn (%d off)" % off)
+	view.free()
+	# Save and load keep every world transform.
+	var before := _world_of_all(p)
+	var dir := ProjectSettings.globalize_path("user://test_projects/scale_tree.ourcraft")
+	check(p.save_dir(dir) == OK, "save the scaled tree")
+	var q := Project.load_dir(dir)
+	var same := q != null
+	if q != null:
+		var loaded := _world_of_all(q)
+		for k in before:
+			if not loaded.has(k) or not (loaded[k] as Transform3D).is_equal_approx(before[k]):
+				same = false
+	check(same, "save and load keep every copy's world size and place")
+
+
+## Random scales, turns, moves, reparents, undos and redos at random levels;
+## after each, the derived data must match a fresh calculation.
+func test_scale_random_ops_keep_derived_data_true() -> void:
+	var failures := []
+	var ops := 0
+	for seed in [11, 23, 47]:
+		var t := _scale_tree()
+		var p: Project = t.project
+		var rng := RandomNumberGenerator.new()
+		rng.seed = seed
+		var view := _test_view(p)
+		for step in 60:
+			var paths := _all_paths(p).filter(func(x): return not x.is_empty())
+			if paths.is_empty():
+				failures.append("seed %d step %d: the tree emptied" % [seed, step])
+				break
+			var path: PackedStringArray = paths[rng.randi_range(0, paths.size() - 1)]
+			var inst := p.instance_at(path)
+			var parent := p.def_at(path.slice(0, path.size() - 1))
+			var op := rng.randi_range(0, 5)
+			match op:
+				0, 1:
+					p.set_instance_scale(parent.id, inst.id, inst.scale * pow(2.0, rng.randi_range(-2, 2)),
+						Vector3(rng.randi_range(-5, 5), 0, rng.randi_range(-5, 5)))
+				2:
+					p.set_instance_transform(parent.id, inst.id, inst.offset + Vector3i(rng.randi_range(-9, 9), 0, rng.randi_range(-9, 9)), inst.rot + rng.randi_range(0, 3))
+				3:
+					var to: PackedStringArray = _all_paths(p)[rng.randi_range(0, _all_paths(p).size() - 1)]
+					var world := p.path_transform(path)
+					var why := p.reparent_path(path, to)
+					if why == "":
+						var moved := to.duplicate()
+						moved.append(inst.id)
+						if not p.path_transform(moved).basis.is_equal_approx(world.basis):
+							failures.append("seed %d step %d: reparent changed size/turn" % [seed, step])
+				4:
+					p.undo()
+				5:
+					p.redo()
+			ops += 1
+			view.flush()
+			var vs := p.voxel_size
+			var to_m := Transform3D(Basis.from_scale(Vector3.ONE * vs), Vector3.ZERO)
+			if view._placements.size() != _all_paths(p).size():
+				failures.append("seed %d step %d: view has %d placements, tree %d" % [seed, step, view._placements.size(), _all_paths(p).size()])
+			for pl in view._placements:
+				var want: Transform3D = to_m * p.path_transform(pl.path) * to_m.affine_inverse()
+				if not (pl.xform as Transform3D).is_equal_approx(want):
+					failures.append("seed %d step %d: %s drawn in the wrong place" % [seed, step, p.path_label(pl.path)])
+					break
+			for id in p.defs:
+				if not _aabb_close(p.def_bounds(id), _fresh_bounds(p, id)):
+					failures.append("seed %d step %d: stale bounds for %s" % [seed, step, p.defs[id].name])
+					break
+			for path2 in _all_paths(p):
+				if path2.is_empty():
+					continue
+				var s2 := p.instance_at(path2).scale
+				if s2 != ObjectInstance.snap_scale(s2):
+					failures.append("seed %d step %d: scale %s isn't a step" % [seed, step, s2])
+		view.collision.focus = Vector3(2, 1, 1)
+		view.collision.radius = 60.0
+		view.collision.sync(view._meshes)
+		for k in view.collision._bodies:
+			if not _body_matches_copy(view, k):
+				failures.append("seed %d: a collision body is off its copy" % seed)
+				break
+		view.free()
+	check(failures.is_empty(), "random scale/turn/move/reparent/undo at random levels keep view, bounds and bodies true (%d ops; %s)" % [ops, "; ".join(failures.slice(0, 4))])

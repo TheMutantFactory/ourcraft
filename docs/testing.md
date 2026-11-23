@@ -267,3 +267,35 @@ merged and coarse meshes once an object has been left alone for 0.5 s.
   of mesh nodes. It wasn't reproducible on demand (0 of 16 retries, plus
   2,400 edits of instanced objects). Next step: a Godot build with debug
   symbols, or comparing with the Vulkan driver.
+
+
+## Scale checks
+
+Copy scale (< >) is covered at three levels:
+
+- **Unit tests** (`tools/test.sh`): a five-deep tree with turns, mixed block
+  sizes and shared objects is scaled at every copy by 1/16 to 8×; the whole
+  subtree must follow, nothing else may move, and undo must restore it
+  exactly. Compound scales are checked against the view's placements,
+  collision bodies (rotation on the body, growth in the triangles,
+  shrinking in the shape transform) and a save/load. A seeded random run
+  mixes scale, turn, move, reparent, undo and redo at random levels and
+  re-checks the view, cached bounds and bodies after every step.
+- **Tree fuzzer** (`tools/fuzz.sh`): includes a scale operation.
+- **In-game probe** (needs real physics frames):
+
+  ```bash
+  tools/run.sh --demo --scaleobj=House:0.5,Kitchen:4,Table:0.25,Plate:8 --scaleprobe --shot=/tmp/probe.png
+  tools/run.sh --demo --scaleobj=Table:0.015625,Plate:0.015625 --scaleprobe --shot=/tmp/probe.png
+  ```
+
+  `--scaleobj` scales the first copy of each named object in order (levels
+  multiply); `--scaleprobe` casts a ray at one open top face of each copy
+  whose world scale isn't 1 (`--scaleprobe=all` for every copy) and prints
+  `scaleprobe PASS/FAIL`. `--probe-debug` adds per-copy body and ray detail.
+
+- **Godot's limits** (`--shapescale`): one bare concave shape, rays at
+  centre and rim, 1/4096 to 64×, three ways of applying scale. Transform
+  scaling misses everything from 16× up; triangles smaller than about 3 mm
+  square are dropped. That is why collision grows the triangles and
+  shrinks through the transform (CollisionField.face_scale).

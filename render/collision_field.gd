@@ -12,8 +12,9 @@ const CELL := 8.0
 ## Re-query when the focus moves this far (metres).
 const MOVE_THRESHOLD := 0.5
 
-## shape_for(def_id, key) -> Shape3D or null, and release_shape(def_id, key):
-## chunk shapes are built on demand and released when no body uses them.
+## shape_for(def_id, key, scale) -> Shape3D or null, and
+## release_shape(def_id, key, scale): chunk shapes are built on demand at a
+## copy's world scale and released when no body uses them.
 var shape_for: Callable
 var release_shape: Callable
 
@@ -141,10 +142,22 @@ func refresh_instance(inst_id: String, new_xform_of: Callable) -> void:
 		var pl: Dictionary = _placements[i]
 		pl.xform = new_xform_of.call(pl.path)
 		touched[i] = true
+	var stale := []
 	for k in _bodies:
 		var i := int(k.get_slice("|", 0))
-		if touched.has(i):
+		if not touched.has(i):
+			continue
+		var sk = _shape_of.get(k)
+		if sk != null and sk[2] != face_scale(_placements[i].xform):
+			# Scaled while dragging: its shape is the wrong size, so drop the
+			# body and let sync build one with the right shape.
+			stale.append(k)
+		else:
 			_set_body_xform(_bodies[k], _placements[i].xform)
+	for k in stale:
+		_free_body(k)
+	if not stale.is_empty():
+		_dirty = true
 
 
 ## Creates and frees bodies so that exactly the chunks near the focus have
@@ -178,10 +191,11 @@ func sync(meshes: Dictionary) -> void:
 		if _bodies.has(k):
 			continue
 		var i: int = want[k][0]
-		var shape: Shape3D = shape_for.call(want[k][1], want[k][2])
+		var sc := face_scale(_placements[i].xform)
+		var shape: Shape3D = shape_for.call(want[k][1], want[k][2], sc)
 		if shape == null:
 			continue
-		_shape_of[k] = [want[k][1], want[k][2]]
+		_shape_of[k] = [want[k][1], want[k][2], sc]
 		var rid := PhysicsServer3D.body_create()
 		PhysicsServer3D.body_set_mode(rid, PhysicsServer3D.BODY_MODE_STATIC)
 		PhysicsServer3D.body_add_shape(rid, shape.get_rid())
@@ -191,13 +205,33 @@ func sync(meshes: Dictionary) -> void:
 		_owner[rid] = i
 
 
-## Places a body. Physics bodies can't carry scale, so a scaled copy's body
-## gets the rotation and position, and its shape gets the scale.
+## How a scaled copy's size reaches physics. Godot's physics handles each
+## half of the range only one way (measured with --shapescale):
+## - scaling a concave shape through a transform stops reporting hits at
+##   16x and up (8x for some shapes);
+## - triangles smaller than about 3 mm square are dropped as degenerate, so
+##   pre-shrunk triangles vanish below 1x.
+## So triangles are built scaled UP by face_scale (>= 1, shared by copies at
+## that scale) and any shrinking is the shape transform's (<= 1).
+static func face_scale(xform: Transform3D) -> float:
+	return maxf(1.0, _scale_of(xform))
+
+
+static func shape_scale(xform: Transform3D) -> float:
+	return minf(1.0, _scale_of(xform))
+
+
+## Places a body: rotation and position on the body, shrinking on its shape.
 static func _set_body_xform(rid: RID, xform: Transform3D) -> void:
-	var sc := xform.basis.get_scale().x
 	PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM,
 		Transform3D(xform.basis.orthonormalized(), xform.origin))
-	PhysicsServer3D.body_set_shape_transform(rid, 0, Transform3D(Basis.from_scale(Vector3.ONE * sc), Vector3.ZERO))
+	PhysicsServer3D.body_set_shape_transform(rid, 0,
+		Transform3D(Basis.from_scale(Vector3.ONE * shape_scale(xform)), Vector3.ZERO))
+
+
+## A placement's world scale (a product of powers of two, so exact).
+static func _scale_of(xform: Transform3D) -> float:
+	return ObjectInstance.snap_scale_any(xform.basis.get_scale().x)
 
 
 ## Adds the chunks of one placement that lie within the radius.
@@ -206,11 +240,16 @@ func _want_chunks(i: int, pl: Dictionary, entries: Dictionary, want: Dictionary)
 	var local: Vector3 = pl.xform.affine_inverse() * focus
 	# The radius in the copy's own units: a 1/16 copy needs 16× more.
 	var r: float = radius / pl.xform.basis.get_scale().x
-	var lo := Vector3i(((local - Vector3.ONE * r) / size).floor())
-	var hi := Vector3i(((local + Vector3.ONE * r) / size).floor())
-	var span := hi - lo + Vector3i.ONE
+	var lo_f := ((local - Vector3.ONE * r) / size).floor()
+	var hi_f := ((local + Vector3.ONE * r) / size).floor()
+	var span := hi_f - lo_f + Vector3.ONE
 	var keys: Array
-	if span.x * span.y * span.z < entries.size():
+	# In floats: inside a tiny copy (scales multiplied down the tree) the
+	# window spans millions of chunks per axis, and the integer product
+	# overflowed negative, sending this down the per-chunk loop forever.
+	if span.x * span.y * span.z < float(entries.size()):
+		var lo := Vector3i(lo_f)
+		var hi := Vector3i(hi_f)
 		keys = []
 		for z in range(lo.z, hi.z + 1):
 			for y in range(lo.y, hi.y + 1):
@@ -242,7 +281,7 @@ func _free_body(k: String) -> void:
 	if sk != null:
 		_shape_of.erase(k)
 		if release_shape.is_valid():
-			release_shape.call(sk[0], sk[1])
+			release_shape.call(sk[0], sk[1], sk[2])
 
 
 func _cells(aabb: AABB) -> Array:
