@@ -123,7 +123,7 @@ static func signature(project: Project, def_id: String) -> String:
 			ctx.update(var_to_bytes(key))
 			ctx.update(def.grid.get_packed(key))
 		for inst in def.children:
-			ctx.update(("%s@%s/%d;" % [inst.def_id, inst.offset, inst.rot]).to_utf8_buffer())
+			ctx.update(("%s@%s/%d*%s;" % [inst.def_id, inst.offset, inst.rot, inst.scale]).to_utf8_buffer())
 	return ctx.finish().hex_encode()
 
 
@@ -216,7 +216,7 @@ func _add(project: Project, def_id: String, xform: Transform3D, depth: int,
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		_stage.add_child(mi)
 	for inst in def.children:
-		var local := Transform3D(ObjectInstance.basis_for(inst.rot), Vector3(inst.offset) * project.voxel_size)
+		var local := Transform3D(inst.basis(), Vector3(inst.offset) * project.voxel_size)
 		_add(project, inst.def_id, xform * local, depth + 1, meshes, budget)
 
 

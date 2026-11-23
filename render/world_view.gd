@@ -417,7 +417,7 @@ func _collect(def_id: String, path: PackedStringArray, xform: Transform3D, depth
 
 
 func _local_xform(inst: ObjectInstance) -> Transform3D:
-	return Transform3D(ObjectInstance.basis_for(inst.rot), Vector3(inst.offset) * project.voxel_size)
+	return Transform3D(inst.basis(), Vector3(inst.offset) * project.voxel_size)
 
 
 func render_node_count() -> int:

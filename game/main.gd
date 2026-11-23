@@ -150,6 +150,31 @@ func _run_debug_args() -> void:
 		view.flush()
 		for i in 5:
 			await get_tree().physics_frame
+		if args.has("scaleobj"):
+			# Debug: --scaleobj=<name>:<scale> scales the first copy of an object.
+			var parts := str(args.scaleobj).replace("_", " ").split(":")
+			var sp = _find_path(project.root(), parts[0], PackedStringArray(), 0)
+			if sp != null:
+				selected = sp
+				var want := float(parts[1])
+				while project.instance_at(sp).scale != ObjectInstance.snap_scale(want):
+					_scale_selected(0.5 if project.instance_at(sp).scale > want else 2.0)
+				print("scaled %s to %s" % [parts[0], ObjectInstance.scale_label(project.instance_at(sp).scale)])
+				if args.has("goto"):
+					_goto(str(args.goto).replace("_", " "), float(args.get("zoom", "1")))
+					# Aim the crosshair exactly at the object's centre.
+					await get_tree().physics_frame
+					var sd := project.def_at(sp)
+					var sb := project.def_bounds(sd.id)
+					var target := _world_xform(sp) * sb.get_center()
+					var dir := target - player.camera.global_position
+					player.rotation.y = atan2(-dir.x, -dir.z)
+					player.set_pitch(atan2(dir.y, Vector2(dir.x, dir.z).length()))
+				selected = null
+				for i in 10:
+					await get_tree().physics_frame
+				_update_aim()
+				print("aim after scale: path=%s pos=%s target=%s cam=%s" % [_aim.get("path"), _aim.get("pos"), _world_xform(sp) * project.def_bounds(project.def_at(sp).id).get_center(), player.camera.global_position])
 		for i in int(args.get("q", "0")):
 			_select(false)
 		if args.has("edit"):
@@ -252,8 +277,10 @@ func _run_debug_args() -> void:
 			brush_idx = maxi(0, BRUSHES.find(int(args.brush)))
 		if args.has("place"):
 			_update_aim()
+			var before_n := _edit_def().grid.solid_count()
 			var t0 := Time.get_ticks_msec()
 			_place()
+			print("place into %s: aim=%s solid %d -> %d" % [_edit_def().name, not _aim.is_empty(), before_n, _edit_def().grid.solid_count()])
 			while view.pending_chunks() > 0:
 				await get_tree().process_frame
 			print("place+mesh ms=%d" % (Time.get_ticks_msec() - t0))
@@ -493,8 +520,11 @@ func _update_aim() -> void:
 	}
 
 
+## A tenth of the edited object's block as drawn in the world, so aiming
+## stays exact inside scaled-down copies (a 1/16 copy's 1 cm block is
+## under a millimetre).
 func _eps() -> float:
-	return project.voxel_size * 0.1
+	return project.voxel_size * 0.1 * minf(1.0, project.path_scale(edit_path) * _edit_def().unit)
 
 
 ## Brush box (cell min, cell max) in the edited object for placing or
@@ -561,11 +591,13 @@ func _refresh_hud_dynamic() -> void:
 		ctx += "   [isolated]"
 	hud.context_label.text = ctx
 	if not _grab.is_empty():
-		hud.selection_label.text = "Moving %s · click drop · R rotate · Esc cancel" % project.def_at(_grab.path).name
+		hud.selection_label.text = "Moving %s · click drop · R rotate · < > scale · Esc cancel" % project.def_at(_grab.path).name
 	elif selected != null and project.is_valid_path(selected):
 		var depth: int = selected.size() - edit_path.size()
-		hud.selection_label.text = "Selected  %s%s  ·  Q up · Enter edit" % [
-			project.def_at(selected).name, "  ↑%d" % (depth - 1) if depth > 1 else ""]
+		var sel_inst := project.instance_at(selected)
+		var sc_txt := "" if sel_inst == null or sel_inst.scale == 1.0 else "  (%s)" % ObjectInstance.scale_label(sel_inst.scale)
+		hud.selection_label.text = "Selected  %s%s%s  ·  Q up · Enter edit · < > scale" % [
+			project.def_at(selected).name, sc_txt, "  ↑%d" % (depth - 1) if depth > 1 else ""]
 	else:
 		hud.selection_label.text = ""
 	var want: int = BRUSHES[brush_idx]
@@ -573,6 +605,9 @@ func _refresh_hud_dynamic() -> void:
 	var txt := "Brush %s" % _cm(got)
 	if got != want:
 		txt += " (object grid; N for finer)"
+	var ps := project.path_scale(edit_path)
+	if ps != 1.0:
+		txt += "  =  %s cm in this %s copy" % [str(snappedf(got * project.voxel_size * 100.0 * ps, 0.001)), ObjectInstance.scale_label(ps)]
 	txt += "  ·  on surface" if on_surface else "  ·  grid"
 	txt += "   ·   You: %sx%s" % [Hud._fmt(player.size), "   ·   flying" if player.flying else ""]
 	hud.brush_label.text = txt
@@ -661,8 +696,10 @@ func _on_key(event: InputEventKey) -> void:
 		KEY_F:
 			player.flying = not player.flying
 			player.velocity = Vector3.ZERO
-		KEY_COMMA: _resize_player(-1)
-		KEY_PERIOD: _resize_player(1)
+		KEY_COMMA: _tool("shrink") if event.shift_pressed else _resize_player(-1)
+		KEY_PERIOD: _tool("grow") if event.shift_pressed else _resize_player(1)
+		KEY_LESS: _tool("shrink")
+		KEY_GREATER: _tool("grow")
 		KEY_MINUS: brush_idx = maxi(brush_idx - 1, 0)
 		KEY_EQUAL: brush_idx = mini(brush_idx + 1, BRUSHES.size() - 1)
 		KEY_Q: _select(event.shift_pressed)
@@ -712,6 +749,8 @@ func _tool(name: String) -> void:
 			tree_lines.visible = not tree_lines.visible
 			tree_lines.mark_dirty()
 			hud.toast("Relationship lines on" if tree_lines.visible else "Relationship lines off")
+		"shrink", "grow":
+			_scale_selected(0.5 if name == "shrink" else 2.0)
 		"surface":
 			on_surface = not on_surface
 			hud.toast("Placing on the surface" if on_surface else "Placing on the brush grid")
@@ -849,6 +888,8 @@ func _run_command(cmd: String) -> void:
 		"grab":
 			if selected != null:
 				_start_grab(selected, false)
+		"shrink", "grow":
+			_scale_selected(0.5 if cmd == "shrink" else 2.0)
 		"rotate":
 			_rotate_selected()
 		"delete":
@@ -1003,8 +1044,40 @@ func _rotate_selected() -> void:
 	var c := project.def_bounds(inst.def_id).get_center()
 	var before := inst.local_transform() * c
 	var rot := posmod(inst.rot + 1, 4)
-	var after := ObjectInstance.basis_for(rot) * c
+	var after := ObjectInstance.basis_for(rot) * inst.scale * c
 	project.set_instance_transform(parent.id, inst.id, Vector3i((before - after).round()), rot)
+
+
+## Halves or doubles the selected copy (or the one being placed), keeping
+## its bottom centre where it is. Its own blocks and everything nested in it
+## scale together; other copies of the same object don't change.
+func _scale_selected(factor: float) -> void:
+	var path = selected if _grab.is_empty() else _grab.path
+	if path == null or (path as PackedStringArray).is_empty():
+		hud.toast("Select an object (Q), then press < or > to make that copy smaller or bigger")
+		return
+	var inst := project.instance_at(path)
+	if inst == null:
+		return
+	var parent := project.def_at(path.slice(0, path.size() - 1))
+	var want := ObjectInstance.snap_scale(inst.scale * factor)
+	if want == inst.scale:
+		hud.toast("%s is already at the %s limit (%s)" % [project.defs[inst.def_id].name,
+			"smallest" if factor < 1.0 else "largest", ObjectInstance.scale_label(inst.scale)])
+		return
+	var b := project.def_bounds(inst.def_id)
+	var anchor := Vector3(b.get_center().x, b.position.y, b.get_center().z)
+	var dragging := not _grab.is_empty()
+	project.set_instance_scale(parent.id, inst.id, want, anchor, not dragging)
+	if dragging:
+		view.refresh_instance(inst)
+		_grab.shown_rot = -1
+	var def: ObjectDef = project.defs[inst.def_id]
+	var block_cm := project.voxel_size * def.unit * project.path_scale(path) * 100.0
+	hud.toast("%s at %s · its blocks are now %s cm%s" % [def.name, ObjectInstance.scale_label(want),
+		Hud._fmt(block_cm) if block_cm >= 0.01 else str(snappedf(block_cm, 0.0001)),
+		"" if dragging else " (Ctrl+Z to undo)"], 3.0)
+	_outline_dirty = true
 
 
 # --- Moving objects --------------------------------------------------------
@@ -1037,7 +1110,7 @@ func _update_grab() -> void:
 	var parent_path: PackedStringArray = _grab.path.slice(0, _grab.path.size() - 1)
 	var snap: int = BRUSHES[brush_idx]
 	var local: Vector3 = _world_xform(parent_path).affine_inverse() * (_aim.pos + _aim.normal * _eps())
-	var b: AABB = Transform3D(ObjectInstance.basis_for(inst.rot), Vector3.ZERO) * project.def_bounds(inst.def_id)
+	var b: AABB = Transform3D(inst.basis(), Vector3.ZERO) * project.def_bounds(inst.def_id)
 	var target := Vector3(local.x - b.get_center().x, local.y - b.position.y, local.z - b.get_center().z)
 	var offset := Vector3i(target.round())
 	offset = Vector3i(roundi(float(offset.x) / snap) * snap, offset.y, roundi(float(offset.z) / snap) * snap)

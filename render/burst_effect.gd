@@ -86,8 +86,12 @@ static func collect(project: Project, view: WorldView, path: PackedStringArray, 
 		biggest = maxi(biggest, box.c)
 		var seeds := maxi(1, roundi(target * n / float(total)))
 		var cut := slice(box.cells, box.dims, seeds, maxi(1, left - (placements.size() - k - 1)), rng.randi())
-		var cell_m := project.voxel_size * def.unit
-		pieces.append_array(_mesh_pieces(box, cut, project.palette, cell_m, pl.xform, keep_voxels))
+		# A scaled copy: build pieces at its world block size and give them
+		# a rotation-only transform (bodies can't carry scale).
+		var sc: float = pl.xform.basis.get_scale().x
+		var cell_m := project.voxel_size * def.unit * sc
+		var xf := Transform3D(pl.xform.basis.orthonormalized(), pl.xform.origin)
+		pieces.append_array(_mesh_pieces(box, cut, project.palette, cell_m, xf, keep_voxels))
 	var sum := Vector3.ZERO
 	var weight := 0
 	for p in pieces:

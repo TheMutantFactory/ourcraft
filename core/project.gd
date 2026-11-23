@@ -461,6 +461,44 @@ func set_instance_transform(parent_id: String, inst_id: String, offset: Vector3i
 		structure_changed.emit()
 
 
+## Changes a copy's scale, keeping `anchor` (a point in the copy's own min
+## units, e.g. its bottom centre) where it is. Returns the scale applied.
+func set_instance_scale(parent_id: String, inst_id: String, new_scale: float, anchor := Vector3.ZERO, notify := true) -> float:
+	var parent: ObjectDef = defs.get(parent_id)
+	if parent == null:
+		return 1.0
+	var inst := parent.find_child(inst_id)
+	if inst == null:
+		return 1.0
+	new_scale = ObjectInstance.snap_scale(new_scale)
+	if new_scale == inst.scale:
+		return new_scale
+	var before := inst.local_transform() * anchor
+	var after := ObjectInstance.basis_for(inst.rot) * new_scale * anchor
+	begin_step("Scale object")
+	_record_children(parent)
+	inst.scale = new_scale
+	inst.offset = Vector3i((before - after).round())
+	end_step()
+	_bounds_cache.clear()
+	if notify:
+		structure_changed.emit()
+	return new_scale
+
+
+## Product of the scales of every copy along a path (1 for the world).
+func path_scale(path: PackedStringArray) -> float:
+	var s := 1.0
+	var def: ObjectDef = root()
+	for inst_id in path:
+		var inst := def.find_child(inst_id)
+		if inst == null:
+			break
+		s *= inst.scale
+		def = defs[inst.def_id]
+	return s
+
+
 ## Points an instance at a different definition (used by "make unique").
 func set_instance_def(parent_id: String, inst_id: String, def_id: String) -> void:
 	var parent: ObjectDef = defs.get(parent_id)
@@ -481,7 +519,7 @@ func set_instance_def(parent_id: String, inst_id: String, def_id: String) -> voi
 ## Moves an instance into a different object (keeping its id), placing it
 ## at offset in the new parent's space. Refused if the new parent is the
 ## instance's object or is inside it. Returns whether it moved.
-func reparent_instance(from_id: String, inst_id: String, to_id: String, offset: Vector3i, rot := -1) -> bool:
+func reparent_instance(from_id: String, inst_id: String, to_id: String, offset: Vector3i, rot := -1, new_scale := -1.0) -> bool:
 	var from: ObjectDef = defs.get(from_id)
 	var to: ObjectDef = defs.get(to_id)
 	if from == null or to == null:
@@ -496,6 +534,8 @@ func reparent_instance(from_id: String, inst_id: String, to_id: String, offset: 
 	inst.offset = offset
 	if rot >= 0:
 		inst.rot = posmod(rot, 4)
+	if new_scale > 0.0:
+		inst.scale = ObjectInstance.snap_scale(new_scale)
 	to.children.append(inst)
 	end_step()
 	_bounds_cache.clear()
@@ -522,10 +562,16 @@ func reparent_path(path: PackedStringArray, to_path: PackedStringArray) -> Strin
 	if would_cycle(to.id, inst.def_id):
 		return "%s is part of %s" % [to.name, defs[inst.def_id].name]
 	var local := path_transform(to_path).affine_inverse() * path_transform(path)
-	var rot := ObjectInstance.quarter_turns_of(local.basis)
+	# Keep the object the same size in the world: its scale in the new
+	# parent is its world scale divided by the new parent's.
+	var sc := local.basis.get_scale().x
+	var snapped := ObjectInstance.snap_scale(sc)
+	if not is_equal_approx(sc, snapped):
+		return "it would need a scale of %s, outside 1/64 to 64×" % sc
+	var rot := ObjectInstance.quarter_turns_of(local.basis * (1.0 / sc))
 	if rot < 0:
 		return "the new parent is rotated in a way the object can't follow"
-	var ok := reparent_instance(from.id, inst.id, to.id, Vector3i(local.origin.round()), rot)
+	var ok := reparent_instance(from.id, inst.id, to.id, Vector3i(local.origin.round()), rot, snapped)
 	return "" if ok else "the move was refused"
 
 

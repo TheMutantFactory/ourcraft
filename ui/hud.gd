@@ -184,7 +184,8 @@ Scroll brush size · T surface / grid placing
 , . shrink / grow yourself
 Q select · Q again walk up · Shift+Q walk down
 Enter edit · Backspace leave · I isolate · L lines
-N new object · G move · R rotate · Del delete · B burst
+N new object · G move · R rotate · < > smaller / bigger
+Del delete · B burst
 Ctrl+C copy · Ctrl+V paste · Ctrl+D duplicate
 U make unique · Ctrl+Z undo · Ctrl+Shift+Z redo
 Ctrl+S save · Ctrl+O reload · Ctrl+ +/− text size
@@ -200,6 +201,7 @@ const TOOLS := [
 	"|",
 	["select", "Q", "Select"], ["edit", "↵", "Edit"], ["leave", "⌫", "Leave"],
 	["new", "N", "New"], ["grab", "G", "Move"], ["rotate", "R", "Rotate"],
+	["shrink", "<", "Smaller"], ["grow", ">", "Bigger"],
 	["delete", "Del", "Delete"], ["unique", "U", "Unique"], ["burst", "B", "Burst"],
 	"|",
 	["copy", "^C", "Copy"], ["paste", "^V", "Paste"], ["duplicate", "^D", "Duplicate"],
@@ -453,7 +455,8 @@ func _build_panel(root: Control) -> void:
 	outline.set_drag_forwarding(_outline_get_drag, _outline_can_drop, _outline_drop)
 	col.add_child(outline)
 	col.add_child(_buttons([["Edit", "edit"], ["Leave", "leave"], ["Isolate", "isolate"]]))
-	col.add_child(_buttons([["Move", "grab"], ["Rotate", "rotate"], ["Unique", "unique"], ["Delete", "delete"]]))
+	col.add_child(_buttons([["Move", "grab"], ["Rotate", "rotate"], ["Smaller", "shrink"], ["Bigger", "grow"]]))
+	col.add_child(_buttons([["Unique", "unique"], ["Delete", "delete"]]))
 
 	col.add_child(_heading("Library"))
 	library = ItemList.new()
@@ -718,6 +721,9 @@ func refresh_outline(project: Project, edit_path: PackedStringArray, selected) -
 ## with thousands of objects doesn't build thousands of rows up front.
 func _outline_row(item: TreeItem, def: ObjectDef, path: PackedStringArray, depth: int) -> void:
 	var text := def.name
+	var inst := _outline_project.instance_at(path) if not path.is_empty() else null
+	if inst != null and inst.scale != 1.0:
+		text += "  @" + ObjectInstance.scale_label(inst.scale)
 	var uses: int = _outline_counts.get(def.id, 0)
 	if uses > 1:
 		text += "  ×%d" % uses

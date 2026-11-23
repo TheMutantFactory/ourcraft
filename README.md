@@ -83,6 +83,9 @@ and a roughly 1:1 Black Rock City for testing distance and scale
 - An **instance** places an object inside another one. Copies share the
   same object, so editing one updates them all. **Make unique** (U) forks the
   copy into its own object.
+- A copy has its own **scale** (< >): a power of two from 1/64 to 64×. A
+  House placed at 1/16 is a dollhouse of the same plan, and edits to House
+  show up in it too.
 - Where faces of nested objects line up in the same plane, the **deeper object
   wins**, so a child reads as a layer on top of its parent.
 - You always **edit** one object at a time. Blocks you place and break go
@@ -109,6 +112,7 @@ tool below as a button, labelled with its key and name when there is room.
 | B | Burst the selected object (or the one under the crosshair) into flying pieces |
 | N | New object at the crosshair (block size = current brush) |
 | G, R, Del | Move, rotate 90°, delete the selected instance |
+| < > (Shift+, Shift+.) | Make the selected copy (or the one you're placing) half or twice as big, from 1/64 to 64×. Only that copy changes; its blocks and everything inside scale together, and you can still enter and edit it |
 | Ctrl+C / Ctrl+V / Ctrl+D | Copy, paste an instance, duplicate |
 | U | Make the selected instance unique (fork) |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
