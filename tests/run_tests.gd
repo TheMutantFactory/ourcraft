@@ -42,6 +42,7 @@ func _run() -> void:
 	test_loads_hand_formatted_objects_json()
 	test_outline_builds_rows_lazily()
 	test_instance_lod_cells()
+	test_road_tour_route()
 	test_corner_reparent()
 	test_reparent_keeps_world_position()
 	test_remove_and_prune()
@@ -589,6 +590,24 @@ func test_instance_lod_cells() -> void:
 		"coarse meshes are rebuilt with the edit")
 	check(r.node_count() == before, "rebuilding keeps one node per cell and level")
 	view.free()
+
+
+## The road tour visits every intersection once, moving only to neighbours.
+func test_road_tour_route() -> void:
+	var r := RoadTour.route(17, 12, 8)
+	var seen := {}
+	var adjacent := true
+	for k in r.size():
+		seen[r[k]] = int(seen.get(r[k], 0)) + 1
+		if k > 0:
+			var d: Vector2i = (r[k] - r[k - 1]).abs()
+			adjacent = adjacent and d.x + d.y == 1
+	check(r.size() == 17 * 12 and seen.size() == 17 * 12, "the tour visits all 204 intersections once (%d steps)" % r.size())
+	check(adjacent, "each step goes to a neighbouring intersection")
+	check(r[0] == Vector2i(8, 0), "the tour starts at 6:00 & Esplanade")
+	check(RoadTour.colour_at(0.0).is_equal_approx(Color.from_hsv(300.0 / 360.0, 0.95, 1.0))
+		and RoadTour.colour_at(1.0).is_equal_approx(Color.from_hsv(90.0 / 360.0, 0.95, 1.0)),
+		"the trail runs from magenta to chartreuse")
 
 
 func test_corner_reparent() -> void:
