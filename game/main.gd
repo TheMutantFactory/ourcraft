@@ -159,15 +159,20 @@ func _run_debug_args() -> void:
 		for i in 5:
 			await get_tree().physics_frame
 		if args.has("scaleobj"):
-			# Debug: --scaleobj=<name>:<scale> scales the first copy of an object.
-			var parts := str(args.scaleobj).replace("_", " ").split(":")
-			var sp = _find_path(project.root(), parts[0], PackedStringArray(), 0)
-			if sp != null:
+			# Debug: --scaleobj=<name>:<scale>[,<name>:<scale>...] scales the
+			# first copy of each object, in order (so levels multiply).
+			var sp = null
+			for spec in str(args.scaleobj).replace("_", " ").split(","):
+				var parts := spec.split(":")
+				sp = _find_path(project.root(), parts[0], PackedStringArray(), 0)
+				if sp == null:
+					continue
 				selected = sp
 				var want := float(parts[1])
 				while project.instance_at(sp).scale != ObjectInstance.snap_scale(want):
 					_scale_selected(0.5 if project.instance_at(sp).scale > want else 2.0)
-				print("scaled %s to %s" % [parts[0], ObjectInstance.scale_label(project.instance_at(sp).scale)])
+				print("scaled %s to %s (world %s)" % [parts[0], ObjectInstance.scale_label(project.instance_at(sp).scale), ObjectInstance.scale_label(project.path_scale(sp))])
+			if sp != null:
 				if args.has("goto"):
 					_goto(str(args.goto).replace("_", " "), float(args.get("zoom", "1")))
 					# Aim the crosshair exactly at the object's centre.
@@ -181,8 +186,10 @@ func _run_debug_args() -> void:
 				selected = null
 				for i in 10:
 					await get_tree().physics_frame
-				_update_aim()
-				print("aim after scale: path=%s pos=%s target=%s cam=%s" % [_aim.get("path"), _aim.get("pos"), _world_xform(sp) * project.def_bounds(project.def_at(sp).id).get_center(), player.camera.global_position])
+		if args.has("shapescale"):
+			await _shape_scale_probe()
+		if args.has("scaleprobe"):
+			await _scale_probe()
 		for i in int(args.get("q", "0")):
 			_select(false)
 		if args.has("edit"):
@@ -1096,6 +1103,143 @@ func _scale_selected(factor: float) -> void:
 		Hud._fmt(block_cm) if block_cm >= 0.01 else str(snappedf(block_cm, 0.0001)),
 		"" if dragging else " (Ctrl+Z to undo)"], 3.0)
 	_outline_dirty = true
+
+
+## Development check (--scaleprobe): for every copy whose world scale isn't
+## 1, finds one of its own blocks with an open top face, brings the player
+## near it (so its collision body exists), and casts a short ray at that
+## face. The ray must hit that copy (or something nested flush on it) at the
+## face's height. Prints one line per copy and a PASS/FAIL summary.
+func _scale_probe() -> void:
+	var ok := 0
+	var bad := 0
+	var placements: Array = view._placements.duplicate()
+	for pl in placements:
+		var path: PackedStringArray = pl.path
+		if path.is_empty() or (project.path_scale(path) == 1.0 and str(OS.get_cmdline_user_args()).find("--scaleprobe=all") < 0):
+			continue
+		var def: ObjectDef = project.defs[pl.def_id]
+		var cell = _open_top_cell(def)
+		if cell == null:
+			continue
+		var xf := _world_xform(path)
+		var u := float(def.unit)
+		var top: Vector3 = xf * ((Vector3(cell) + Vector3(0.5, 1.0, 0.5)) * u)
+		var cell_w := project.voxel_size * u * project.path_scale(path)
+		player.flying = true
+		player.global_position = top + Vector3(0.3, 0.2, 0.3)
+		for i in 4:
+			await get_tree().physics_frame
+		# At least 5 cm above and 2 cm below the face: Godot misses faces with
+		# rays that start or end within millimetres of them (the game's aiming
+		# ray is metres long). Only this copy's own bodies are hit-tested, so
+		# reaching past the face can't hit anything else first.
+		var q := PhysicsRayQueryParameters3D.create(top + Vector3.UP * maxf(cell_w * 0.3, 0.05), top - Vector3.UP * maxf(cell_w * 0.3, 0.02))
+		# Only this copy's own blocks: a scaled-up object lying over it (a 4x
+		# plate over a fork, or over its own table) isn't a miss.
+		var others := [player.get_rid()]
+		for k in view.collision._bodies:
+			var rid: RID = view.collision._bodies[k]
+			if view.collision._placements[view.collision._owner[rid]].path != path:
+				others.append(rid)
+		q.exclude = others
+		var hit := get_world_3d().direct_space_state.intersect_ray(q)
+		var info := view.pick(hit) if not hit.is_empty() else {}
+		var hp = info.get("path")
+		if OS.get_cmdline_user_args().has("--probe-debug"):
+			var nb := 0
+			var keys := []
+			for k in view.collision._bodies:
+				var pi: int = view.collision._owner[view.collision._bodies[k]]
+				if view.collision._placements[pi].path == path:
+					nb += 1
+					keys.append(k.get_slice("|", 1))
+			print("  bodies for this copy: %d %s; chunks %s; cell %s; meshes %s" % [nb, keys, def.grid.keys(), cell, view._meshes.get(def.id, {}).keys()])
+			for probe_cell in [Vector3i(0, 0, 0), cell, Vector3i(-4, 1, 10), Vector3i(4, 1, -10), Vector3i(10, 1, 3), Vector3i(-10, 1, 3)]:
+				if def.grid.get_cell(probe_cell) == 0 or def.grid.get_cell(probe_cell + Vector3i.UP) != 0:
+					continue
+				var tp: Vector3 = xf * ((Vector3(probe_cell) + Vector3(0.5, 1.0, 0.5)) * u)
+				var q2 := PhysicsRayQueryParameters3D.create(tp + Vector3.UP * 0.05, tp - Vector3.UP * 0.05)
+				q2.exclude = [player.get_rid()]
+				var h2 := get_world_3d().direct_space_state.intersect_ray(q2)
+				var i2 := view.pick(h2) if not h2.is_empty() else {}
+				print("    cell %s top y=%.4f -> %s y=%s" % [probe_cell, tp.y, project.path_label(i2.get("path")) if i2.get("path") != null else "nothing", h2.get("position", Vector3.INF).y])
+		var good: bool = hp != null and hp == path and absf(hit.position.y - top.y) < cell_w * 0.05 + 1e-4
+		if good:
+			ok += 1
+		else:
+			bad += 1
+		print("probe %s @%s block %s cm: %s%s" % [project.path_label(path), ObjectInstance.scale_label(project.path_scale(path)),
+			str(snappedf(cell_w * 100.0, 0.0001)), "hit" if good else "MISS",
+			"" if good else " (got %s at y=%s, want y=%s)" % [project.path_label(hp) if hp != null else "nothing", hit.get("position", Vector3.INF).y, top.y]])
+	print("scaleprobe %s: %d hit, %d missed" % ["PASS" if bad == 0 and ok > 0 else "FAIL", ok, bad])
+
+
+## Development check (--shapescale): one body with a plate-like
+## ConcavePolygonShape3D (a 22 cm disc made of two triangles per cell),
+## its scale applied the way CollisionField does (on the shape's
+## transform), rays cast at the centre and near the rim. Isolates Godot's
+## handling of scaled concave shapes from Ourcraft's placement code.
+func _shape_scale_probe() -> void:
+	var faces := PackedVector3Array()
+	for x in range(-11, 11):
+		for z in range(-11, 11):
+			if Vector2(x + 0.5, z + 0.5).length() > 11.0:
+				continue
+			var a := Vector3(x, 1, z) * 0.01
+			var b := Vector3(x + 1, 1, z) * 0.01
+			var c := Vector3(x + 1, 1, z + 1) * 0.01
+			var d := Vector3(x, 1, z + 1) * 0.01
+			faces.append_array([a, d, c, a, c, b])
+	var shape := ConcavePolygonShape3D.new()
+	shape.backface_collision = true
+	shape.set_faces(faces)
+	var space := get_world_3d().space
+	for mode in ["shape", "body", "faces"]:
+		for sc in [1.0 / 4096.0, 1.0 / 256.0, 1.0 / 64.0, 1.0 / 16.0, 0.25, 1.0, 2.0, 4.0, 8.0, 16.0, 64.0]:
+			var rid := PhysicsServer3D.body_create()
+			PhysicsServer3D.body_set_mode(rid, PhysicsServer3D.BODY_MODE_STATIC)
+			var use_shape := shape
+			if mode == "faces":
+				use_shape = ConcavePolygonShape3D.new()
+				use_shape.backface_collision = true
+				use_shape.set_faces(Transform3D(Basis.from_scale(Vector3.ONE * sc), Vector3.ZERO) * faces)
+			PhysicsServer3D.body_add_shape(rid, use_shape.get_rid())
+			var origin := Vector3(50, 5, 50)
+			if mode == "faces":
+				PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM, Transform3D(Basis(), origin))
+			elif mode == "shape":
+				PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM, Transform3D(Basis(), origin))
+				PhysicsServer3D.body_set_shape_transform(rid, 0, Transform3D(Basis.from_scale(Vector3.ONE * sc), Vector3.ZERO))
+			else:
+				PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM, Transform3D(Basis.from_scale(Vector3.ONE * sc), origin))
+			PhysicsServer3D.body_set_space(rid, space)
+			for i in 3:
+				await get_tree().physics_frame
+			var out := []
+			for cell in [Vector2(0.5, 0.5), Vector2(5.5, 0.5), Vector2(9.5, 3.5), Vector2(-9.5, -3.5)]:
+				var top: Vector3 = origin + Vector3(cell.x, 1, cell.y) * 0.01 * sc
+				var q := PhysicsRayQueryParameters3D.create(top + Vector3.UP * 0.5, top - Vector3.UP * 0.5)
+				var h := get_world_3d().direct_space_state.intersect_ray(q)
+				out.append("hit" if not h.is_empty() and absf(h.position.y - top.y) < maxf(1e-3 * sc, 1e-6) else "MISS")
+			print("shapescale %-5s %-8s %s" % [mode, ObjectInstance.scale_label(sc), " ".join(out)])
+			PhysicsServer3D.free_rid(rid)
+
+
+## A solid cell of def's own grid with nothing above it in that grid.
+func _open_top_cell(def: ObjectDef):
+	for key in def.sorted_keys():
+		var data = def.grid.get_chunk(key)
+		if data == null:
+			continue
+		for i in VoxelGrid.VOLUME:
+			if data[i] == 0:
+				continue
+			var local := Vector3i(i & VoxelGrid.MASK, (i >> VoxelGrid.SHIFT) & VoxelGrid.MASK, i >> (VoxelGrid.SHIFT * 2))
+			var c: Vector3i = key * VoxelGrid.SIZE + local
+			if def.grid.get_cell(c + Vector3i.UP) == 0:
+				return c
+	return null
 
 
 # --- Moving objects --------------------------------------------------------
