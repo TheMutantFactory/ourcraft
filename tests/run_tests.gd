@@ -68,6 +68,7 @@ func _run() -> void:
 	test_thumbnail_stage_and_framing()
 	test_toolbar_rows()
 	test_panel_window()
+	test_copy_scale()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -1250,3 +1251,69 @@ func test_panel_window() -> void:
 		var f := FileAccess.open(Settings.PATH, FileAccess.WRITE)
 		f.store_string(saved)
 		f.close()
+
+
+## A copy's scale: doubling steps, kept anchored, undoable, saved, and
+## followed by bounds, nested objects, rendering, reparenting and pictures.
+func test_copy_scale() -> void:
+	check(ObjectInstance.snap_scale(0.3) == 0.25 and ObjectInstance.snap_scale(3.0) == 4.0, "scale snaps to powers of two")
+	check(ObjectInstance.snap_scale(1000) == 64.0 and ObjectInstance.snap_scale(0.0001) == 1.0 / 64.0, "scale is clamped")
+	check(ObjectInstance.scale_label(0.0625) == "1/16" and ObjectInstance.scale_label(4.0) == "4×", "scale labels")
+	var p := Demo.build(0.01)
+	var street := _def_named(p, "Street")
+	var house := _def_named(p, "House")
+	var inst: ObjectInstance = street.children[1]
+	var other: ObjectInstance = street.children[0]
+	var hb := p.def_bounds(house.id)
+	var anchor := Vector3(hb.get_center().x, hb.position.y, hb.get_center().z)
+	var before := inst.local_transform() * anchor
+	var full := (Transform3D(Basis(), Vector3.ZERO) * p.def_bounds(street.id)).size
+	var got := p.set_instance_scale(street.id, inst.id, 0.06, anchor)
+	check(got == 0.0625 and inst.scale == 0.0625, "copy scaled to 1/16")
+	check(other.scale == 1.0, "other copies of the same object keep their size")
+	check((inst.local_transform() * anchor).distance_to(before) < 1.0, "the bottom centre stays put")
+	var wb := inst.local_transform() * hb
+	check(is_equal_approx(wb.size.x, hb.size.x / 16.0), "the copy's bounds shrink with it")
+	# Nested objects scale too: the kitchen inside this house is 1/16 size.
+	var root_inst: ObjectInstance = p.root().children[0]
+	var path := PackedStringArray([root_inst.id, inst.id, house.children[0].id])
+	check(is_equal_approx(p.path_scale(path), 0.0625), "path scale multiplies down the tree")
+	var k_def := p.def_at(path)
+	var kb := p.def_bounds(k_def.id)
+	var world_k := p.path_transform(path) * kb
+	check(is_equal_approx(world_k.size.x, kb.size.x / 16.0), "nested kitchen is drawn at 1/16")
+	# Undo restores scale and position.
+	var off := inst.offset
+	p.undo()
+	var back: ObjectInstance = street.find_child(inst.id)
+	check(back.scale == 1.0 and (back.local_transform() * anchor).distance_to(before) < 1.0, "undo restores the scale")
+	p.redo()
+	back = street.find_child(inst.id)
+	check(back.scale == 0.0625 and back.offset == off, "redo reapplies it")
+	# Save and load.
+	var dir := ProjectSettings.globalize_path("user://test_projects/scale.ourcraft")
+	check(p.save_dir(dir) == OK, "save")
+	var q := Project.load_dir(dir)
+	check(q != null and _def_named(q, "Street").find_child(inst.id).scale == 0.0625, "scale survives save and load")
+	check(not (other.to_dict() as Dictionary).has("scale"), "scale 1 isn't written")
+	# Rendering uses the scaled transform.
+	var view := _test_view(p)
+	var found := false
+	for pl in view._placements:
+		if pl.path.size() == 2 and pl.path[1] == inst.id:
+			found = is_equal_approx(pl.xform.basis.get_scale().x, 0.0625)
+	check(found, "the view draws the copy at its scale")
+	view.queue_free()
+	# Moving a scaled copy into another object keeps its size in the world.
+	var mini_world := p.path_transform(PackedStringArray([root_inst.id, inst.id]))
+	var why := p.reparent_path(PackedStringArray([root_inst.id, inst.id]), PackedStringArray())
+	check(why == "", "reparent a scaled copy to the world (%s)" % why)
+	var moved: ObjectInstance = p.root().find_child(inst.id)
+	check(moved != null and moved.scale == 0.0625, "it keeps its scale relative to the new parent")
+	if moved != null:
+		check(moved.local_transform().basis.is_equal_approx(mini_world.basis), "and the same size and turn in the world")
+	# Pictures change with scale.
+	var s0 := Thumbnailer.signature(p, house.id)
+	var kit_inst: ObjectInstance = house.children[0]
+	p.set_instance_scale(house.id, kit_inst.id, 2.0)
+	check(Thumbnailer.signature(p, house.id) != s0, "scaling a nested copy changes the parent's picture")

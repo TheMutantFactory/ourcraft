@@ -131,7 +131,8 @@ func _bake(key: Vector3i, meshes: Dictionary) -> void:
 		if entries.is_empty():
 			continue
 		var xform: Transform3D = pl.xform
-		var rot := Transform3D(xform.basis, Vector3.ZERO)
+		# Rotation only: scaled copies must not scale their normals.
+		var rot := Transform3D(xform.basis.orthonormalized(), Vector3.ZERO)
 		var depth_uv := Vector2(pl.depth, 0)
 		for chunk_key in entries:
 			var ck := "%s|%s" % [pl.def_id, chunk_key]

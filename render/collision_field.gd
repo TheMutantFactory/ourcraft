@@ -144,7 +144,7 @@ func refresh_instance(inst_id: String, new_xform_of: Callable) -> void:
 	for k in _bodies:
 		var i := int(k.get_slice("|", 0))
 		if touched.has(i):
-			PhysicsServer3D.body_set_state(_bodies[k], PhysicsServer3D.BODY_STATE_TRANSFORM, _placements[i].xform)
+			_set_body_xform(_bodies[k], _placements[i].xform)
 
 
 ## Creates and frees bodies so that exactly the chunks near the focus have
@@ -186,18 +186,29 @@ func sync(meshes: Dictionary) -> void:
 		var rid := PhysicsServer3D.body_create()
 		PhysicsServer3D.body_set_mode(rid, PhysicsServer3D.BODY_MODE_STATIC)
 		PhysicsServer3D.body_add_shape(rid, shape.get_rid())
-		PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM, _placements[i].xform)
+		_set_body_xform(rid, _placements[i].xform)
 		PhysicsServer3D.body_set_space(rid, _space)
 		_bodies[k] = rid
 		_owner[rid] = i
+
+
+## Places a body. Physics bodies can't carry scale, so a scaled copy's body
+## gets the rotation and position, and its shape gets the scale.
+static func _set_body_xform(rid: RID, xform: Transform3D) -> void:
+	var sc := xform.basis.get_scale().x
+	PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM,
+		Transform3D(xform.basis.orthonormalized(), xform.origin))
+	PhysicsServer3D.body_set_shape_transform(rid, 0, Transform3D(Basis.from_scale(Vector3.ONE * sc), Vector3.ZERO))
 
 
 ## Adds the chunks of one placement that lie within the radius.
 func _want_chunks(i: int, pl: Dictionary, entries: Dictionary, want: Dictionary) -> void:
 	var size: float = VoxelGrid.SIZE * pl.cell_m
 	var local: Vector3 = pl.xform.affine_inverse() * focus
-	var lo := Vector3i(((local - Vector3.ONE * radius) / size).floor())
-	var hi := Vector3i(((local + Vector3.ONE * radius) / size).floor())
+	# The radius in the copy's own units: a 1/16 copy needs 16× more.
+	var r: float = radius / pl.xform.basis.get_scale().x
+	var lo := Vector3i(((local - Vector3.ONE * r) / size).floor())
+	var hi := Vector3i(((local + Vector3.ONE * r) / size).floor())
 	var span := hi - lo + Vector3i.ONE
 	var keys: Array
 	if span.x * span.y * span.z < entries.size():
@@ -212,7 +223,7 @@ func _want_chunks(i: int, pl: Dictionary, entries: Dictionary, want: Dictionary)
 		keys = entries.keys()
 	for key in keys:
 		var box := AABB(Vector3(key) * size, Vector3.ONE * size)
-		if _distance(box, local) > radius:
+		if _distance(box, local) > r:
 			continue
 		want["%d|%d,%d,%d" % [i, key.x, key.y, key.z]] = [i, pl.def_id, key]
 

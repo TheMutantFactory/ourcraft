@@ -29,7 +29,7 @@ var stats := {}
 var checks := true
 
 var _weights := [
-	["add", 14], ["remove", 6], ["move", 8], ["rotate", 3], ["retarget", 4],
+	["add", 14], ["remove", 6], ["move", 8], ["rotate", 3], ["scale", 3], ["retarget", 4],
 	["reparent", 8], ["keep", 5], ["unique", 4], ["create", 5], ["delete", 2], ["rename", 2],
 	["unit", 1], ["edit", 12], ["undo", 8], ["redo", 4],
 ]
@@ -51,7 +51,7 @@ func _init(seed: int, project: Project = null, word_list: Array = []) -> void:
 func step() -> bool:
 	steps += 1
 	var op := _pick_op()
-	var undoable := op in ["add", "remove", "move", "rotate", "retarget", "reparent", "keep", "edit"]
+	var undoable := op in ["add", "remove", "move", "rotate", "scale", "retarget", "reparent", "keep", "edit"]
 	var pre := _snapshot() if undoable and checks else ""
 	var undo_before = _last_undo()
 	var note: String = call("_op_" + op)
@@ -126,6 +126,18 @@ func _op_rotate() -> String:
 	return "%s in %s to rot %d" % [inst.id, parent.name, inst.rot]
 
 
+func _op_scale() -> String:
+	var parent := _random_def_with_children()
+	if parent == null:
+		return ""
+	var inst: ObjectInstance = parent.children[rng.randi_range(0, parent.children.size() - 1)]
+	var want := pow(2.0, rng.randi_range(-3, 3))
+	var got := p.set_instance_scale(parent.id, inst.id, want, Vector3(rng.randi_range(-20, 20), 0, rng.randi_range(-20, 20)))
+	if got != inst.scale or got != ObjectInstance.snap_scale(want):
+		fail("scale %s in %s: asked %s, got %s, now %s" % [inst.id, parent.name, want, got, inst.scale])
+	return "%s in %s to %s" % [inst.id, parent.name, ObjectInstance.scale_label(inst.scale)]
+
+
 func _op_retarget() -> String:
 	var parent := _random_def_with_children()
 	if parent == null:
@@ -169,13 +181,19 @@ func _op_keep() -> String:
 	var inst := p.instance_at(path)
 	var expect_ok := to_path != path.slice(0, path.size() - 1) and not _reaches(inst.def_id, p.def_at(to_path).id)
 	var why := p.reparent_path(path, to_path)
-	if (why == "") != expect_ok:
+	# A copy can't be moved where it would need a scale outside 1/64..64.
+	var out_of_range := why.contains("would need a scale")
+	if (why == "") != expect_ok and not out_of_range:
 		fail("keep-in-place move %s -> %s: got '%s', expected ok=%s" % ["/".join(path), "/".join(to_path), why, expect_ok])
 	if why == "":
 		var moved := to_path.duplicate()
 		moved.append(inst.id)
-		if not p.path_transform(moved).is_equal_approx(world):
-			fail("keep-in-place move changed the world position")
+		var now := p.path_transform(moved)
+		# Same size and turn; position snaps to the new parent's min-unit
+		# grid, which a scaled parent makes finer or coarser.
+		var tol := p.path_scale(to_path) * 0.87 + 1e-3
+		if not now.basis.is_equal_approx(world.basis) or now.origin.distance_to(world.origin) > tol:
+			fail("keep-in-place move changed the world position or size")
 	return "%s -> %s (%s)" % [inst.id, p.def_at(to_path).name, "ok" if why == "" else why]
 
 
@@ -321,6 +339,8 @@ func _check_invariants() -> void:
 			seen[inst.id] = def.name
 			if inst.rot < 0 or inst.rot > 3:
 				fail("rotation %d out of range" % inst.rot)
+			if inst.scale != ObjectInstance.snap_scale(inst.scale):
+				fail("scale %s isn't an allowed step" % inst.scale)
 	# No cycles.
 	var state := {}
 	for id in p.defs:
