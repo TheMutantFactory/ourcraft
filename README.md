@@ -7,7 +7,7 @@ Ourcraft is at the planning and technical-prototype stage. The first goal is a
 small, bounded building game that can prove whether moving between architectural,
 object, and miniature scales is useful and fun.
 
-See the [project plan](docs/project-plan.md) for scope, milestones, architecture,
+See the [project plan](docs/project-plan.md) and the narrower [One Room MVP plan](docs/one-room-mvp.md) for scope, milestones, architecture,
 validation criteria, and the first five days of work.
 
 ## Running the MVP

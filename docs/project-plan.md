@@ -61,6 +61,9 @@ platform, or a general-purpose CAD system.
 
 ## 4. First product: Ourcraft — Small Works
 
+> The first build toward this is narrowed in [One Room — MVP plan](one-room-mvp.md):
+> furnishing a space at several scales, before challenges and simulation.
+
 The first release is a bounded daily design-and-simulation game for desktop and
 the web. It is deliberately not an infinite survival world.
 
