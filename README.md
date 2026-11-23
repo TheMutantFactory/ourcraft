@@ -110,6 +110,7 @@ and a roughly 1:1 Black Rock City for testing distance and scale
 | U | Make the selected instance unique (fork) |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 | Ctrl+S / Ctrl+O | Save / reload |
+| E | Palette: every object as a picture, in tabs. Click to pick one up and place it; right-click to move it to another tab |
 | Tab | Panel: outline tree, object library (rename, place, export, import, delete), settings |
 | Drag in the outline | Drop a row onto another to move that object inside it, keeping it in place (Ctrl+Z undoes) |
 | H | Show/hide the controls overlay |

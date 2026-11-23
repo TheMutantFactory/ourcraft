@@ -57,6 +57,7 @@ Each object has:
 | `chunks` | `key` (chunk coordinates), `hash` (content hash in the pack) and `count` (solid cells), sorted by z, then y, then x. |
 | `children` | Instances: `id`, `object` (the placed object's id), `offset` (in smallest-block units of this object's space) and `rot` (quarter turns about +Y). |
 | `forked_from` | Optional id of the object this one was copied from. |
+| `category` | Optional palette tab: `Sit & sleep`, `Surfaces & storage`, `Light`, `Life` or `Structure`. Missing or any other value shows under Other. |
 
 Keys within each line are sorted, so saving the same project twice produces
 the same bytes. If the file has been reformatted by hand, it is read as

@@ -18,6 +18,11 @@ var grid := VoxelGrid.new()
 ## Array of ObjectInstance.
 var children: Array = []
 var forked_from := ""
+## Palette group ("" = Other). One of ObjectDef.CATEGORIES or any string.
+var category := ""
+
+## Palette tabs, in order. Objects with another or no category go in Other.
+const CATEGORIES := ["Sit & sleep", "Surfaces & storage", "Light", "Life", "Structure"]
 
 
 func find_child(inst_id: String) -> ObjectInstance:
@@ -46,6 +51,8 @@ func to_meta(chunk_refs: Array) -> Dictionary:
 	var d := {"id": id, "name": name, "unit": unit, "chunks": chunk_list, "children": child_list}
 	if forked_from != "":
 		d["forked_from"] = forked_from
+	if category != "":
+		d["category"] = category
 	return d
 
 
@@ -57,6 +64,7 @@ static func from_meta(d: Dictionary, pack: Dictionary) -> Array:
 	def.name = str(d.get("name", "Object"))
 	def.unit = maxi(1, int(d.get("unit", 1)))
 	def.forked_from = str(d.get("forked_from", ""))
+	def.category = str(d.get("category", ""))
 	var hashes := []
 	for c in d.get("chunks", []):
 		var k: Array = c["key"]
@@ -105,6 +113,8 @@ func to_dict() -> Dictionary:
 	}
 	if forked_from != "":
 		d["forked_from"] = forked_from
+	if category != "":
+		d["category"] = category
 	return d
 
 
@@ -114,6 +124,7 @@ static func from_dict(d: Dictionary) -> ObjectDef:
 	def.name = str(d.get("name", "Object"))
 	def.unit = maxi(1, int(d.get("unit", 1)))
 	def.forked_from = str(d.get("forked_from", ""))
+	def.category = str(d.get("category", ""))
 	if int(d.get("chunk_size", VoxelGrid.SIZE)) != VoxelGrid.SIZE:
 		push_error("Unsupported chunk size in object %s" % def.id)
 		return def

@@ -120,6 +120,16 @@ func rename_def(def_id: String, new_name: String) -> void:
 	structure_changed.emit()
 
 
+## Sets the palette group an object appears under ("" = Other).
+func set_def_category(def_id: String, cat: String) -> void:
+	var def: ObjectDef = defs.get(def_id)
+	if def == null or def.category == cat.strip_edges():
+		return
+	def.category = cat.strip_edges()
+	_clean.erase(def_id)
+	library_changed.emit()
+
+
 ## Copies a definition (voxels and the list of child instances, which keep
 ## referencing the same nested objects). Returns the new definition.
 func fork_def(def_id: String) -> ObjectDef:
@@ -127,6 +137,7 @@ func fork_def(def_id: String) -> ObjectDef:
 	var def := create_def(unique_name(src.name + " copy"), src.unit)
 	def.grid = src.grid.copy()
 	def.forked_from = src.id
+	def.category = src.category
 	if not def.grid.is_empty():
 		voxels_changed.emit(def.id, def.grid.keys())
 	for inst in src.children:
