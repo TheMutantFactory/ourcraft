@@ -1,7 +1,8 @@
 class_name Hud
 extends CanvasLayer
 ## On-screen interface: crosshair, breadcrumb, hotbar, toasts, help, and the
-## side panel (outline, library, settings) shown when the mouse is released.
+## panel (outline, library, settings), which lives in its own movable,
+## resizable window beside the game.
 
 signal outline_selected(path: PackedStringArray)
 signal outline_activated(path: PackedStringArray)
@@ -20,6 +21,11 @@ signal ui_scale_changed(value: float)
 signal color_chosen(index: int)
 ## A tool-row button was clicked; main runs it like its key.
 signal tool(name: String)
+## The panel window's close button was clicked.
+signal panel_closed
+## A key pressed while the panel window had focus that the game should
+## handle (Tab, Esc, Ctrl/Cmd shortcuts outside text fields).
+signal panel_key(event: InputEventKey)
 
 const UNITS := [1, 2, 5, 10, 25, 50, 100]
 
@@ -33,6 +39,10 @@ var hotbar: HBoxContainer
 ## Second bottom row: the tools from the controls list (H), as buttons.
 var toolbar: HBoxContainer
 var panel: PanelContainer
+## The OS window holding `panel`.
+var panel_window: Window
+var panel_scale_slider: HSlider
+var _panel_scale_label: Label
 var outline: Tree
 var library: ItemList
 var name_edit: LineEdit
@@ -364,24 +374,71 @@ func _make_theme() -> Theme:
 	t.set_stylebox("panel", "Tree", field)
 	t.set_stylebox("panel", "ItemList", field)
 	t.set_stylebox("normal", "LineEdit", field)
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color(1, 1, 1, 0.16)
+	track.set_corner_radius_all(4)
+	track.content_margin_top = 3
+	track.content_margin_bottom = 3
+	t.set_stylebox("slider", "HSlider", track)
 	return t
 
 
+const PANEL_DEFAULT := Vector2i(340, 560) # first-time size in panel units (× panel size)
+
+
 func _build_panel(root: Control) -> void:
+	# A real OS window (not drawn inside the game) so it can sit beside the
+	# game, be moved and resized, and stay open while you play.
+	panel_window = Window.new()
+	panel_window.title = "Ourcraft panel"
+	panel_window.visible = false
+	panel_window.force_native = true
+	panel_window.transient = true # stays above the game window
+	panel_window.wrap_controls = false
+	panel_window.close_requested.connect(func(): panel_closed.emit())
+	panel_window.window_input.connect(_on_panel_input)
+	add_child(panel_window)
 	panel = PanelContainer.new()
-	panel.set_anchors_preset(Control.PRESET_LEFT_WIDE)
-	panel.position = Vector2(14, 90)
-	panel.custom_minimum_size = Vector2(360, 0)
-	panel.size = Vector2(360, 0)
-	panel.offset_bottom = -110
-	panel.visible = false
-	root.add_child(panel)
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.theme = root.theme
+	var flat := StyleBoxFlat.new()
+	flat.bg_color = Color(0.09, 0.1, 0.12)
+	flat.set_content_margin_all(10)
+	panel.add_theme_stylebox_override("panel", flat)
+	panel_window.add_child(panel)
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 8)
+	panel.add_child(outer)
+
+	# Panel size: scales everything in this window, separately from the
+	# game's own text size. At the top so it stays reachable.
+	var size_row := HBoxContainer.new()
+	var sl := Label.new()
+	sl.text = "Panel size"
+	size_row.add_child(sl)
+	panel_scale_slider = HSlider.new()
+	panel_scale_slider.min_value = 1.0
+	panel_scale_slider.max_value = 6.0
+	panel_scale_slider.step = 0.25
+	panel_scale_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel_scale_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	panel_scale_slider.value_changed.connect(func(v):
+		if not _suppress: set_panel_scale(v))
+	size_row.add_child(panel_scale_slider)
+	_panel_scale_label = Label.new()
+	_panel_scale_label.custom_minimum_size.x = 44
+	_panel_scale_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	size_row.add_child(_panel_scale_label)
+	outer.add_child(size_row)
+
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	panel.add_child(scroll)
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(scroll)
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 8)
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.add_child(col)
 
 	col.add_child(_heading("Outline"))
@@ -450,7 +507,7 @@ func _build_panel(root: Control) -> void:
 		if not _suppress: object_unit_changed.emit(unit_option.get_item_id(i)))
 	grid.add_child(unit_option)
 	var l3 := Label.new()
-	l3.text = "Text size"
+	l3.text = "Game text size"
 	grid.add_child(l3)
 	ui_scale_spin = SpinBox.new()
 	ui_scale_spin.min_value = 1.0
@@ -532,17 +589,83 @@ func set_palette(all_colors: Array, current: int) -> void:
 
 
 func show_panel(on: bool) -> void:
-	panel.visible = on
+	if on == panel_window.visible:
+		return
 	if on:
 		help_panel.visible = false
 		palette.visible = false
+		_restore_panel_window()
+		panel_window.show()
+	else:
+		_remember_panel_window()
+		panel_window.hide()
+
+
+## Scales everything in the panel window (Window.content_scale_factor).
+func set_panel_scale(value: float) -> void:
+	value = clampf(snappedf(value, 0.25), panel_scale_slider.min_value, panel_scale_slider.max_value)
+	panel_window.content_scale_factor = value
+	_suppress = true
+	panel_scale_slider.value = value
+	_suppress = false
+	_panel_scale_label.text = _fmt(value) + "×"
+	Settings.set_panel_scale(value)
+
+
+func panel_scale() -> float:
+	return panel_window.content_scale_factor
+
+
+## Puts the panel window where it was last time, or beside the left edge of
+## the game window the first time, kept on the game's screen.
+func _restore_panel_window() -> void:
+	var sc := Settings.panel_scale()
+	panel_window.content_scale_factor = sc
+	_suppress = true
+	panel_scale_slider.value = sc
+	_suppress = false
+	_panel_scale_label.text = _fmt(sc) + "×"
+	var game := get_window()
+	var screen := DisplayServer.screen_get_usable_rect(game.current_screen)
+	var r := Settings.panel_rect()
+	if r.size == Vector2i.ZERO:
+		var sz := Vector2i(Vector2(PANEL_DEFAULT) * sc)
+		sz = sz.min(Vector2i(Vector2(screen.size) * Vector2(0.4, 0.85)))
+		r = Rect2i(game.position + Vector2i(24, 60), sz)
+	r.size = r.size.clamp(Vector2i(200, 200), screen.size)
+	r.position = r.position.clamp(screen.position, screen.end - r.size)
+	panel_window.min_size = Vector2i(160, 160)
+	panel_window.size = r.size
+	panel_window.position = r.position
+
+
+func _remember_panel_window() -> void:
+	if panel_window.visible:
+		Settings.set_panel_rect(Rect2i(panel_window.position, panel_window.size))
+
+
+func _exit_tree() -> void:
+	if panel_window != null:
+		_remember_panel_window()
+
+
+## Keys typed in the panel window: text fields keep theirs; Tab, Esc and
+## Ctrl/Cmd shortcuts go to the game.
+func _on_panel_input(ev: InputEvent) -> void:
+	if not (ev is InputEventKey and ev.pressed and not ev.echo):
+		return
+	var focus := panel_window.gui_get_focus_owner()
+	var typing := focus is LineEdit or focus is SpinBox or (focus != null and focus.get_parent() is SpinBox)
+	var shortcut: bool = ev.ctrl_pressed or ev.meta_pressed
+	if ev.keycode == KEY_TAB or ev.keycode == KEY_ESCAPE or (shortcut and not typing):
+		panel_window.set_input_as_handled()
+		panel_key.emit(ev)
 
 
 func show_palette(on: bool) -> void:
 	palette.visible = on
 	if on:
 		help_panel.visible = false
-		panel.visible = false
 
 
 func palette_open() -> bool:
@@ -550,7 +673,7 @@ func palette_open() -> bool:
 
 
 func panel_open() -> bool:
-	return panel.visible
+	return panel_window.visible
 
 
 func toggle_help() -> void:

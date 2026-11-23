@@ -117,7 +117,7 @@ tool below as a button, labelled with its key and name when there is room.
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 | Ctrl+S / Ctrl+O | Save / reload |
 | E | Palette: every object as a picture, in tabs. Click to pick one up and place it; right-click to move it to another tab |
-| Tab | Panel: outline tree, object library (rename, place, export, import, delete), settings |
+| Tab | Panel window: outline tree, object library (rename, place, export, import, delete), settings. It is a separate window you can move and resize, and it stays open while you play (click the game to go back to it; Esc frees the mouse again). The **Panel size** slider at its top scales its contents; size, place and scale are remembered |
 | Drag in the outline | Drop a row onto another to move that object inside it, keeping it in place (Ctrl+Z undoes) |
 | H | Show/hide the controls overlay |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Text size up / down / reset (default is 2× the screen's scale, so 4× on Retina) |
