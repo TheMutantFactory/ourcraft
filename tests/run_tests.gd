@@ -43,6 +43,7 @@ func _run() -> void:
 	test_outline_builds_rows_lazily()
 	test_instance_lod_cells()
 	test_road_tour_route()
+	test_hide_instances()
 	test_corner_reparent()
 	test_reparent_keeps_world_position()
 	test_remove_and_prune()
@@ -608,6 +609,35 @@ func test_road_tour_route() -> void:
 	check(RoadTour.colour_at(0.0).is_equal_approx(Color.from_hsv(300.0 / 360.0, 0.95, 1.0))
 		and RoadTour.colour_at(1.0).is_equal_approx(Color.from_hsv(90.0 / 360.0, 0.95, 1.0)),
 		"the trail runs from magenta to chartreuse")
+
+
+## Hidden instances stop drawing at once and stay hidden through rebuilds
+## until they're removed (WorldView.hide_instances).
+func test_hide_instances() -> void:
+	var p := Project.create_empty(0.01)
+	var block := p.create_def("Block", 10)
+	block.grid.fill_box(Vector3i.ZERO, Vector3i(2, 2, 2), 3)
+	var ids := []
+	for i in 80:
+		ids.append(p.add_instance(p.root_id, block.id, Vector3i(i * 300, 0, 0)).id)
+	var view := _test_view(p)
+	var r := view._renderer
+	var hidden_scale := func(id: String) -> float:
+		var i: int = view.collision.placements_under(id)[0]
+		var s: Array = r._slots[i]
+		var buf: PackedFloat32Array = r._groups[s[0]].cells[s[1]].buffer
+		return absf(buf[s[2] * 12]) + absf(buf[s[2] * 12 + 5]) + absf(buf[s[2] * 12 + 10])
+	view.hide_instances([ids[3], ids[40]])
+	check(hidden_scale.call(ids[3]) == 0.0 and hidden_scale.call(ids[40]) == 0.0, "hidden copies are drawn at zero size")
+	check(hidden_scale.call(ids[4]) > 0.0, "other copies still draw")
+	p.remove_instance(p.root_id, ids[3])
+	view.rebuild_tree()
+	check(hidden_scale.call(ids[40]) == 0.0, "a hidden copy stays hidden after a rebuild")
+	check(not view._hidden.has(ids[3]), "removed copies leave the hidden set")
+	view.show_instances([ids[40]])
+	view.rebuild_tree()
+	check(hidden_scale.call(ids[40]) > 0.0, "shown again after show_instances")
+	view.free()
 
 
 func test_corner_reparent() -> void:

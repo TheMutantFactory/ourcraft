@@ -17,6 +17,9 @@ var stats := {}
 var soak := 0.0
 var poke_failures := PackedStringArray()
 var _elapsed := 0.0
+## False: no physics bodies are made for the project's objects (the
+## scenario does its own collision).
+var world_collision := true
 var _start_ram := 0
 
 

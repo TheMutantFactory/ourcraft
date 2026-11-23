@@ -60,6 +60,8 @@ var _drag_inst := ""
 ## live instead of being baked.
 var _dynamic: Dictionary = {}
 var _tree_dirty := false
+## Instance ids not drawn although still in the project (see hide_instances).
+var _hidden: Dictionary = {}
 
 
 func _ready() -> void:
@@ -548,6 +550,28 @@ func set_dragging(inst_id: String) -> void:
 
 
 ## Marks instances that move every frame, so they're drawn live.
+## Stops drawing instances right away, until they're removed from the
+## project or shown again; for removing many objects one by one without a
+## rebuild each time. Only instanced (live) copies can be hidden this way.
+func hide_instances(inst_ids: Array) -> void:
+	for id in inst_ids:
+		_hidden[id] = true
+	_apply_hidden(inst_ids)
+
+
+func show_instances(inst_ids: Array) -> void:
+	for id in inst_ids:
+		_hidden.erase(id)
+	_tree_dirty = true
+
+
+func _apply_hidden(inst_ids: Array) -> void:
+	var indices := []
+	for id in inst_ids:
+		indices.append_array(collision.placements_under(id))
+	_renderer.hide_placements(indices)
+
+
 func set_dynamic(inst_ids: Dictionary) -> void:
 	_dynamic = inst_ids.duplicate()
 	_apply_render_modes()
@@ -591,6 +615,10 @@ func _apply_render_modes() -> void:
 			live_defs[pl.def_id] = true
 	_update_live_meshes(live_defs)
 	_renderer.set_placements(_placements, func(i): return live.has(i), _meshes)
+	for id in _hidden.keys():
+		if collision.placements_under(id).is_empty():
+			_hidden.erase(id) # removed from the project since
+	_apply_hidden(_hidden.keys())
 	_baker.set_placements(_placements, func(i): return _is_visible(i) and not live.has(i))
 
 

@@ -189,19 +189,31 @@ func _process(delta: float) -> void:
 ## Pushes new transforms for some placements (e.g. while dragging).
 func update(indices: Array) -> void:
 	for i in indices:
-		var s = _slots.get(i)
-		if s == null:
-			continue
-		var c: Dictionary = _groups[s[0]].cells[s[1]]
-		var t := _local(c, _placements[i].xform)
-		_write(c.buffer, s[2], t)
-		for list in c.nodes.values():
-			if list.size() == 1 and list[0] is MultiMeshInstance3D:
-				list[0].multimesh.set_instance_transform(s[2], t)
-			else:
-				list[s[2]].transform = _placements[i].xform
-		for n in c.levels:
-			n.multimesh.set_instance_transform(s[2], t)
+		_set_slot(i, _placements[i].xform)
+
+
+## Stops drawing some placements until the next rebuild (a zero-size
+## transform), without rebuilding anything.
+func hide_placements(indices: Array) -> void:
+	var gone := Transform3D(Basis.from_scale(Vector3.ZERO), Vector3.ZERO)
+	for i in indices:
+		_set_slot(i, gone, true)
+
+
+func _set_slot(i: int, world: Transform3D, hidden := false) -> void:
+	var s = _slots.get(i)
+	if s == null:
+		return
+	var c: Dictionary = _groups[s[0]].cells[s[1]]
+	var t := world if hidden else _local(c, world)
+	_write(c.buffer, s[2], t)
+	for list in c.nodes.values():
+		if list.size() == 1 and list[0] is MultiMeshInstance3D:
+			list[0].multimesh.set_instance_transform(s[2], t)
+		else:
+			list[s[2]].transform = world
+	for n in c.levels:
+		n.multimesh.set_instance_transform(s[2], t)
 
 
 ## Placement indices currently drawn, for consistency checks.

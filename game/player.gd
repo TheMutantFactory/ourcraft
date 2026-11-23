@@ -34,6 +34,8 @@ var _pitch := 0.0
 var third_person := false
 ## Moved by something else: movement keys do nothing.
 var driven := false
+## Whether third person shows the cube (off when something else is "you").
+var avatar := true
 ## Third-person camera distance behind and height above the eyes (at 1x).
 var follow := FOLLOW
 var follow_up := FOLLOW_UP
@@ -96,9 +98,14 @@ func set_pitch(p: float) -> void:
 
 func set_third_person(on: bool) -> void:
 	third_person = on
-	_cube.visible = on
+	_cube.visible = on and avatar
 	_orbit = 0.0
 	_place_camera()
+
+
+## The direction the camera faces around Y (body yaw plus orbit).
+func view_yaw() -> float:
+	return rotation.y + _orbit
 
 
 ## First person: at the eyes. Third person: behind and above the cube,
