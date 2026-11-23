@@ -66,6 +66,7 @@ func _run() -> void:
 	test_palette_groups()
 	test_thumbnail_signature()
 	test_thumbnail_stage_and_framing()
+	test_toolbar_rows()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -1168,3 +1169,39 @@ func test_thumbnail_stage_and_framing() -> void:
 	check(t.pending() == 1, "requests for the same picture are merged")
 	t.clear_queue()
 	t.free()
+
+
+## The bottom bar: a clickable colour row, then one button per tool, whose
+## text shrinks (key + name, name, key, small key) to fit the screen.
+func test_toolbar_rows() -> void:
+	var hud := Hud.new()
+	root.add_child(hud)
+	var p := Demo.build(0.01)
+	hud.set_palette(p.palette, 1)
+	check(hud.hotbar.get_child_count() == 10, "ten colour swatches")
+	var got := []
+	hud.color_chosen.connect(func(i): got.append(i))
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	hud.hotbar.get_child(2).gui_input.emit(click)
+	check(got == [3], "clicking the third swatch picks colour 3")
+	var ids := []
+	for spec in Hud.TOOLS:
+		if spec is Array:
+			ids.append(spec[0])
+	check(hud._tool_buttons.size() == ids.size() and ids.size() >= 20, "one button per tool (%d)" % ids.size())
+	for id in ["break", "place", "select", "edit", "grab", "rotate", "delete", "undo", "redo", "palette", "help"]:
+		check(ids.has(id), "tool row has %s" % id)
+	var pressed := []
+	hud.tool.connect(func(n): pressed.append(n))
+	hud._tool_buttons["rotate"].pressed.emit()
+	check(pressed == ["rotate"], "a tool button sends its tool")
+	var widths := []
+	for i in Hud.TOOL_STYLES.size():
+		widths.append(hud._toolbar_width(i))
+	check(widths[0] > widths[1] and widths[1] > widths[2] and widths[2] > widths[3], "each style is narrower (%s)" % str(widths))
+	hud.set_tool_state("surface", true, "Grid")
+	check(hud._tool_buttons["surface"].button_pressed and hud._tool_buttons["surface"].get_meta("label") == "Grid",
+		"mode tools show their state")
+	hud.free()

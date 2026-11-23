@@ -211,6 +211,11 @@ func _run_debug_args() -> void:
 			var to_path = _find_path(project.root(), names[1], PackedStringArray(), 0)
 			if from_path != null and to_path != null:
 				_reparent(from_path, to_path)
+		if args.has("uiscale"):
+			# Debug: --uiscale=2 renders at another text size (not saved).
+			get_window().content_scale_factor = float(args.uiscale)
+			for i in 3:
+				await get_tree().process_frame
 		if args.has("palette"):
 			_toggle_palette(true)
 			if str(args.palette) != "":
@@ -255,6 +260,7 @@ func _run_debug_args() -> void:
 			print("place+mesh ms=%d" % (Time.get_ticks_msec() - t0))
 		for i in int(args.get("wait", "20")):
 			await get_tree().process_frame
+		print("toolbar level=%d root_w=%.0f" % [hud.toolbar_level(), hud._root.size.x])
 		print("fps=%d chunks_pending=%d player_y=%.3f bodies=%d regions=%d render_nodes=%d placements=%d live=%d" % [Engine.get_frames_per_second(), view.pending_chunks(), player.global_position.y, view.collision.active_count(), view.baked_region_count(), view.render_node_count(), view._placements.size(), view._renderer.drawn_placements().size()])
 		print("draw_calls=%d objects=%d primitives=%d" % [Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME), Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)])
 		get_viewport().get_texture().get_image().save_png(str(args.shot))
@@ -331,6 +337,8 @@ func _setup_input() -> void:
 
 func _connect_hud() -> void:
 	hud.command.connect(_run_command)
+	hud.tool.connect(_tool)
+	hud.color_chosen.connect(_set_color)
 	hud.outline_selected.connect(func(path):
 		selected = null if path.is_empty() else path
 		if selected != null and not Hud._is_prefix(edit_path, selected):
@@ -574,6 +582,12 @@ func _refresh_hud_dynamic() -> void:
 	txt += "  ·  on surface" if on_surface else "  ·  grid"
 	txt += "   ·   You: %sx%s" % [Hud._fmt(player.size), "   ·   flying" if player.flying else ""]
 	hud.brush_label.text = txt
+	hud.set_tool_state("surface", not on_surface, "Surface" if on_surface else "Grid")
+	hud.set_tool_state("isolate", isolated)
+	hud.set_tool_state("lines", tree_lines.visible)
+	hud.set_tool_state("palette", hud.palette_open())
+	hud.set_tool_state("panel", hud.panel_open())
+	hud.set_tool_state("help", hud.help_panel.visible)
 	var pending := view.pending_chunks()
 	var status := ("Meshing %d chunks…" % pending) if pending > 0 else "%d fps\nH: controls" % Engine.get_frames_per_second()
 	if scenario != null:
@@ -624,22 +638,19 @@ func _on_key(event: InputEventKey) -> void:
 	var k := event.keycode
 	if ctrl:
 		match k:
-			KEY_Z: _run_command("redo" if event.shift_pressed else "undo")
-			KEY_Y: _run_command("redo")
-			KEY_C: _run_command("copy")
-			KEY_V: _run_command("paste")
-			KEY_D: _run_command("duplicate")
-			KEY_S: _run_command("save")
-			KEY_O: _run_command("load")
+			KEY_Z: _tool("redo" if event.shift_pressed else "undo")
+			KEY_Y: _tool("redo")
+			KEY_C: _tool("copy")
+			KEY_V: _tool("paste")
+			KEY_D: _tool("duplicate")
+			KEY_S: _tool("save")
+			KEY_O: _tool("load")
 			KEY_EQUAL, KEY_PLUS, KEY_KP_ADD: set_ui_scale(get_window().content_scale_factor + 0.5)
 			KEY_MINUS, KEY_KP_SUBTRACT: set_ui_scale(get_window().content_scale_factor - 0.5)
 			KEY_0: set_ui_scale(2.0 * DisplayServer.screen_get_scale())
 		return
 	if k >= KEY_0 and k <= KEY_9:
-		var n := 10 if k == KEY_0 else k - KEY_0
-		if n <= project.palette.size():
-			color = n
-			hud.set_palette(project.palette, color)
+		_set_color(10 if k == KEY_0 else k - KEY_0)
 		return
 	match k:
 		KEY_ESCAPE:
@@ -650,48 +661,74 @@ func _on_key(event: InputEventKey) -> void:
 			else:
 				_toggle_panel(false)
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		KEY_TAB: _toggle_panel(not hud.panel_open())
-		KEY_E: _toggle_palette(not hud.palette_open())
-		KEY_H: hud.toggle_help()
 		KEY_F:
 			player.flying = not player.flying
 			player.velocity = Vector3.ZERO
+		KEY_V:
+			player.set_third_person(not player.third_person)
+			hud.toast("Third person" if player.third_person else "First person")
 		KEY_COMMA: _resize_player(-1)
 		KEY_PERIOD: _resize_player(1)
 		KEY_MINUS: brush_idx = maxi(brush_idx - 1, 0)
 		KEY_EQUAL: brush_idx = mini(brush_idx + 1, BRUSHES.size() - 1)
 		KEY_Q: _select(event.shift_pressed)
-		KEY_ENTER, KEY_KP_ENTER: _run_command("edit")
-		KEY_BACKSPACE: _run_command("leave")
-		KEY_I: _run_command("isolate")
-		KEY_N: _new_object()
-		KEY_G: _run_command("grab")
-		KEY_R:
+		KEY_TAB: _tool("panel")
+		KEY_E: _tool("palette")
+		KEY_H: _tool("help")
+		KEY_ENTER, KEY_KP_ENTER: _tool("edit")
+		KEY_BACKSPACE: _tool("leave")
+		KEY_I: _tool("isolate")
+		KEY_N: _tool("new")
+		KEY_G: _tool("grab")
+		KEY_R: _tool("rotate")
+		KEY_DELETE, KEY_X: _tool("delete")
+		KEY_U: _tool("unique")
+		KEY_B: _tool("burst")
+		KEY_L: _tool("lines")
+		KEY_T: _tool("surface")
+
+
+## Runs one tool from the bottom row (Hud.TOOLS). Keys and the row's buttons
+## both come here, so a tool behaves the same however it is used.
+func _tool(name: String) -> void:
+	match name:
+		"break": _break()
+		"place": _place()
+		"pick": _pick_color()
+		"select": _select(false)
+		"new": _new_object()
+		"palette": _toggle_palette(not hud.palette_open())
+		"panel": _toggle_panel(not hud.panel_open())
+		"help": hud.toggle_help()
+		"rotate":
 			if not _grab.is_empty():
 				var gi: ObjectInstance = _grab.inst
 				project.set_instance_transform(_grab.parent.id, gi.id, gi.offset, gi.rot + 1, false)
 				view.refresh_instance(gi)
 			else:
 				_run_command("rotate")
-		KEY_DELETE, KEY_X: _run_command("delete")
-		KEY_U: _run_command("unique")
-		KEY_B:
+		"burst":
 			if selected != null:
 				_burst(selected)
 			elif not _aim.is_empty() and _aim.path != null:
 				_burst(_aim.path)
 			else:
 				hud.toast("Aim at an object, or select one with Q, then press B to burst it")
-		KEY_L:
+		"lines":
 			tree_lines.visible = not tree_lines.visible
 			tree_lines.mark_dirty()
 			hud.toast("Relationship lines on" if tree_lines.visible else "Relationship lines off")
-		KEY_V:
-			player.set_third_person(not player.third_person)
-			hud.toast("Third person" if player.third_person else "First person")
-		KEY_T:
+		"surface":
 			on_surface = not on_surface
 			hud.toast("Placing on the surface" if on_surface else "Placing on the brush grid")
+		_:
+			_run_command(name)
+
+
+func _set_color(n: int) -> void:
+	if n >= 1 and n <= project.palette.size():
+		color = n
+		hud.set_palette(project.palette, color)
 
 
 func _toggle_panel(on: bool) -> void:
