@@ -90,6 +90,9 @@ and a roughly 1:1 Black Rock City for testing distance and scale
 
 ## Controls
 
+The bottom bar has two rows: the colours (click one to pick it) and every
+tool below as a button, labelled with its key and name when there is room.
+
 | Input | Action |
 | --- | --- |
 | WASD, Space, Shift | Move, jump, sprint |

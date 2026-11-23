@@ -16,6 +16,10 @@ signal import_object(file_path: String)
 signal min_block_changed(cm: float)
 signal object_unit_changed(unit: int)
 signal ui_scale_changed(value: float)
+## A colour swatch was clicked (1-based palette index).
+signal color_chosen(index: int)
+## A tool-row button was clicked; main runs it like its key.
+signal tool(name: String)
 
 const UNITS := [1, 2, 5, 10, 25, 50, 100]
 
@@ -26,6 +30,8 @@ var toast_label: Label
 var help_panel: PanelContainer
 var status_label: Label
 var hotbar: HBoxContainer
+## Second bottom row: the tools from the controls list (H), as buttons.
+var toolbar: HBoxContainer
 var panel: PanelContainer
 var outline: Tree
 var library: ItemList
@@ -46,6 +52,9 @@ var _outline_project: Project
 var _outline_edit := PackedStringArray()
 var _outline_selected = null
 var _outline_counts: Dictionary = {}
+var _root: Control
+var _tool_buttons: Dictionary = {} # tool id -> Button
+var _compact := -1
 
 
 func _ready() -> void:
@@ -129,9 +138,20 @@ func _ready() -> void:
 	var bar := PanelContainer.new()
 	bar.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	bottom.add_child(bar)
+	var rows := VBoxContainer.new()
+	rows.add_theme_constant_override("separation", 6)
+	bar.add_child(rows)
 	hotbar = HBoxContainer.new()
+	hotbar.alignment = BoxContainer.ALIGNMENT_CENTER
 	hotbar.add_theme_constant_override("separation", 6)
-	bar.add_child(hotbar)
+	rows.add_child(hotbar)
+	toolbar = HBoxContainer.new()
+	toolbar.alignment = BoxContainer.ALIGNMENT_CENTER
+	toolbar.add_theme_constant_override("separation", 3)
+	rows.add_child(toolbar)
+	_build_toolbar()
+	_root = root
+	root.resized.connect(_fit_toolbar)
 
 	_build_panel(root)
 
@@ -159,6 +179,141 @@ Ctrl+C copy · Ctrl+V paste · Ctrl+D duplicate
 U make unique · Ctrl+Z undo · Ctrl+Shift+Z redo
 Ctrl+S save · Ctrl+O reload · Ctrl+ +/− text size
 E palette · Tab panel · H close this"""
+
+
+## The tool row: [id, key, label]. A "|" entry starts a new group. Same
+## tools, in the same order, as the controls list (H); movement and text
+## size stay keyboard-only.
+const TOOLS := [
+	["break", "LMB", "Break"], ["place", "RMB", "Place"], ["pick", "MMB", "Pick"],
+	["surface", "T", "Surface"],
+	"|",
+	["select", "Q", "Select"], ["edit", "↵", "Edit"], ["leave", "⌫", "Leave"],
+	["new", "N", "New"], ["grab", "G", "Move"], ["rotate", "R", "Rotate"],
+	["delete", "Del", "Delete"], ["unique", "U", "Unique"], ["burst", "B", "Burst"],
+	"|",
+	["copy", "^C", "Copy"], ["paste", "^V", "Paste"], ["duplicate", "^D", "Duplicate"],
+	"|",
+	["undo", "^Z", "Undo"], ["redo", "⇧^Z", "Redo"],
+	"|",
+	["isolate", "I", "Isolate"], ["lines", "L", "Lines"],
+	"|",
+	["palette", "E", "Palette"], ["panel", "Tab", "Panel"],
+	["save", "^S", "Save"], ["load", "^O", "Reload"], ["help", "H", "Help"],
+]
+## Tools that stay pressed while their mode is on.
+const TOGGLES := ["surface", "isolate", "lines", "palette", "panel", "help"]
+
+
+func _build_toolbar() -> void:
+	var ctrl := "⌘" if OS.get_name() == "macOS" else "Ctrl+"
+	var tight := StyleBoxFlat.new()
+	tight.bg_color = Color(0.2, 0.22, 0.27)
+	tight.set_corner_radius_all(5)
+	tight.content_margin_left = 5
+	tight.content_margin_right = 5
+	tight.content_margin_top = 3
+	tight.content_margin_bottom = 3
+	var hov := tight.duplicate()
+	hov.bg_color = Color(0.28, 0.31, 0.38)
+	var on := tight.duplicate()
+	on.bg_color = Color(0.36, 0.42, 0.55)
+	for spec in TOOLS:
+		if spec is String:
+			var sep := VSeparator.new()
+			sep.add_theme_constant_override("separation", 6)
+			toolbar.add_child(sep)
+			continue
+		var b := Button.new()
+		var key: String = spec[1].replace("^", ctrl)
+		b.set_meta("key", key)
+		b.set_meta("label", spec[2])
+		b.tooltip_text = "%s  (%s)" % [spec[2], key]
+		b.focus_mode = Control.FOCUS_NONE
+		b.toggle_mode = TOGGLES.has(spec[0])
+		b.add_theme_font_size_override("font_size", 11)
+		b.add_theme_stylebox_override("normal", tight)
+		b.add_theme_stylebox_override("hover", hov)
+		b.add_theme_stylebox_override("pressed", on)
+		b.add_theme_stylebox_override("hover_pressed", on)
+		var id: String = spec[0]
+		b.pressed.connect(func(): tool.emit(id))
+		toolbar.add_child(b)
+		_tool_buttons[id] = b
+	_apply_tool_style(0)
+	_fit_toolbar.call_deferred()
+
+
+## Picks the roomiest style that fits the screen: "Q Select", then names
+## only, then key caps only, then smaller key caps (the tooltip always has
+## both). Widths are measured from the text, since
+## a container's minimum size isn't updated until the next frame.
+const TOOL_STYLES := [["both", 11, 5], ["name", 11, 5], ["key", 11, 5], ["key", 9, 3]] # [text, font size, side margin]
+
+
+func _fit_toolbar() -> void:
+	if _root == null:
+		return
+	var avail := _root.size.x - 64.0
+	if avail <= 0.0:
+		return
+	var level := TOOL_STYLES.size() - 1
+	for i in TOOL_STYLES.size():
+		if _toolbar_width(i) <= avail:
+			level = i
+			break
+	_compact = level
+	_apply_tool_style(level)
+
+
+func _toolbar_width(level: int) -> float:
+	var st: Array = TOOL_STYLES[level]
+	var font := toolbar.get_theme_default_font()
+	var w := 0.0
+	var n := 0
+	for c in toolbar.get_children():
+		if c is Button:
+			w += font.get_string_size(_tool_text(c, st[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, st[1]).x + st[2] * 2
+		else:
+			w += 13.0
+		n += 1
+	return w + 3.0 * (n - 1)
+
+
+func _tool_text(b: Button, mode: String) -> String:
+	match mode:
+		"both": return "%s %s" % [b.get_meta("key"), b.get_meta("label")]
+		"name": return b.get_meta("label")
+	return b.get_meta("key")
+
+
+func _apply_tool_style(level: int) -> void:
+	var st: Array = TOOL_STYLES[level]
+	for id in _tool_buttons:
+		var b: Button = _tool_buttons[id]
+		b.text = _tool_text(b, st[0])
+		b.add_theme_font_size_override("font_size", st[1])
+		for state in ["normal", "hover", "pressed", "hover_pressed"]:
+			var sb: StyleBoxFlat = b.get_theme_stylebox(state)
+			sb.content_margin_left = st[2]
+			sb.content_margin_right = st[2]
+
+
+## Index into TOOL_STYLES: 0 key and name … 3 small key caps.
+func toolbar_level() -> int:
+	return _compact
+
+
+## Shows a mode tool as on or off; label replaces its name (e.g. Grid).
+func set_tool_state(id: String, on: bool, label := "") -> void:
+	var b: Button = _tool_buttons.get(id)
+	if b == null:
+		return
+	b.set_pressed_no_signal(on)
+	if label != "" and label != b.get_meta("label"):
+		b.set_meta("label", label)
+		b.tooltip_text = "%s  (%s)" % [label, b.get_meta("key")]
+		_fit_toolbar()
 
 
 func _pin_top_right(c: Control, top: float, width: float) -> void:
@@ -351,6 +506,12 @@ func set_palette(all_colors: Array, current: int) -> void:
 		for i in colors.size():
 			var sw := Panel.new()
 			sw.custom_minimum_size = Vector2(34, 34)
+			sw.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+			sw.tooltip_text = "Colour %d (key %d)" % [i + 1, (i + 1) % 10]
+			var index := i + 1
+			sw.gui_input.connect(func(ev):
+				if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+					color_chosen.emit(index))
 			var key := Label.new()
 			key.text = str((i + 1) % 10)
 			key.add_theme_font_size_override("font_size", 11)
