@@ -239,6 +239,13 @@ func _run_debug_args() -> void:
 			hud.refresh_outline(project, edit_path, selected)
 			hud.refresh_library(project)
 			print("panel refresh ms=%.0f" % ((Time.get_ticks_usec() - tp) / 1000.0))
+			if str(args.panel).is_valid_float():
+				hud.set_panel_scale(float(args.panel))
+			for i in 5:
+				await get_tree().process_frame
+			print("panel window native=%s pos=%s size=%s scale=%s game=%s" % [hud.panel_window.is_embedded() == false, hud.panel_window.position, hud.panel_window.size, hud.panel_scale(), Rect2i(get_window().position, get_window().size)])
+			if args.has("shot"):
+				hud.panel_window.get_texture().get_image().save_png(str(args.shot).replace(".png", "-panel.png"))
 		if args.has("grid"):
 			on_surface = false
 		if args.has("brush"):
@@ -330,6 +337,8 @@ func _setup_input() -> void:
 func _connect_hud() -> void:
 	hud.command.connect(_run_command)
 	hud.tool.connect(_tool)
+	hud.panel_closed.connect(func(): _toggle_panel(false))
+	hud.panel_key.connect(_on_key)
 	hud.color_chosen.connect(_set_color)
 	hud.outline_selected.connect(func(path):
 		selected = null if path.is_empty() else path
@@ -589,7 +598,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed:
 		if not captured:
-			if not hud.panel_open() and not hud.palette_open():
+			# The panel is its own window, so clicking the game goes back to
+			# playing with it still open.
+			if not hud.palette_open():
 				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 			return
 		_on_click(event)
@@ -644,8 +655,9 @@ func _on_key(event: InputEventKey) -> void:
 			elif hud.palette_open():
 				_toggle_palette(false)
 			else:
-				_toggle_panel(false)
+				# Frees the mouse (to reach the panel window or the tool row).
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+				get_window().grab_focus()
 		KEY_F:
 			player.flying = not player.flying
 			player.velocity = Vector3.ZERO
@@ -715,7 +727,13 @@ func _set_color(n: int) -> void:
 
 func _toggle_panel(on: bool) -> void:
 	hud.show_panel(on)
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if on else Input.MOUSE_MODE_CAPTURED
+	if on:
+		# Free the mouse so it can reach the panel window; click the game to
+		# play again with the panel still open.
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	elif not hud.palette_open():
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		get_window().grab_focus()
 	_outline_dirty = true
 
 
@@ -972,8 +990,7 @@ func _place_from_library(def_id: String) -> void:
 	path.append(inst.id)
 	view.rebuild_tree()
 	_start_grab(path, true)
-	if hud.panel_open():
-		_toggle_panel(false)
+	get_window().grab_focus()
 	if hud.palette_open():
 		hud.show_palette(false)
 

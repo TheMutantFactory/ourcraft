@@ -65,6 +65,7 @@ func _run() -> void:
 	test_thumbnail_signature()
 	test_thumbnail_stage_and_framing()
 	test_toolbar_rows()
+	test_panel_window()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -1156,3 +1157,47 @@ func test_toolbar_rows() -> void:
 	check(hud._tool_buttons["surface"].button_pressed and hud._tool_buttons["surface"].get_meta("label") == "Grid",
 		"mode tools show their state")
 	hud.free()
+
+
+## The Tab panel lives in its own window with its own size slider, and keys
+## typed there reach the game except inside text fields.
+func test_panel_window() -> void:
+	# The panel saves its size and place in user settings; keep the real
+	# file as it was.
+	var saved := FileAccess.get_file_as_string(Settings.PATH) if FileAccess.file_exists(Settings.PATH) else ""
+	var hud := Hud.new()
+	root.add_child(hud)
+	check(hud.panel_window is Window and not hud.panel_open(), "panel is a hidden window at start")
+	hud.show_panel(true)
+	check(hud.panel_open() and hud.panel_window.visible, "show_panel opens the window")
+	hud.set_panel_scale(2.3)
+	check(is_equal_approx(hud.panel_scale(), 2.25) and is_equal_approx(hud.panel_window.content_scale_factor, 2.25),
+		"panel size snaps to quarter steps and scales the window's content")
+	hud.set_panel_scale(99)
+	check(hud.panel_scale() == hud.panel_scale_slider.max_value, "panel size is clamped")
+	check(is_equal_approx(Settings.panel_scale(), hud.panel_scale()), "panel size is remembered")
+	var keys := []
+	hud.panel_key.connect(func(ev): keys.append(ev.keycode))
+	var tab := InputEventKey.new()
+	tab.keycode = KEY_TAB
+	tab.pressed = true
+	hud._on_panel_input(tab)
+	var q := InputEventKey.new()
+	q.keycode = KEY_Q
+	q.pressed = true
+	hud._on_panel_input(q)
+	var undo := InputEventKey.new()
+	undo.keycode = KEY_Z
+	undo.meta_pressed = true
+	undo.pressed = true
+	hud._on_panel_input(undo)
+	check(keys == [KEY_TAB, KEY_Z], "Tab and shortcuts reach the game, plain letters don't (%s)" % str(keys))
+	hud.show_panel(false)
+	check(not hud.panel_open(), "show_panel(false) hides it")
+	hud.free()
+	if saved == "":
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(Settings.PATH))
+	else:
+		var f := FileAccess.open(Settings.PATH, FileAccess.WRITE)
+		f.store_string(saved)
+		f.close()
