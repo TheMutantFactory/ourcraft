@@ -18,6 +18,7 @@ var player: Player
 var hud: Hud
 var overlay: Overlay
 var tree_lines: TreeLines
+var thumbnailer: Thumbnailer
 ## The running scenario (HoleScenario, BurstScenario), if any.
 var scenario: Scenario
 var _scenery: Node3D
@@ -59,6 +60,10 @@ func _ready() -> void:
 	add_child(player)
 	hud = Hud.new()
 	add_child(hud)
+	thumbnailer = Thumbnailer.new()
+	add_child(thumbnailer)
+	hud.palette.thumbnailer = thumbnailer
+	thumbnailer.rendered.connect(hud.palette.on_rendered)
 	_connect_hud()
 
 	# tools/run.sh --project=<folder> opens (and saves to) another project.
@@ -198,6 +203,31 @@ func _run_debug_args() -> void:
 			var to_path = _find_path(project.root(), names[1], PackedStringArray(), 0)
 			if from_path != null and to_path != null:
 				_reparent(from_path, to_path)
+		if args.has("palette"):
+			_toggle_palette(true)
+			if str(args.palette) != "":
+				hud.palette.select_tab(str(args.palette).replace("_", " "))
+			for i in 240:
+				await get_tree().process_frame
+				if thumbnailer.pending() == 0 and i > 10:
+					break
+			print("palette tiles=%d tab=%s thumbs_pending=%d" % [hud.palette.tile_count(), hud.palette.current_tab_name(), thumbnailer.pending()])
+			if args.has("menu"):
+				# Debug: right-click the first tile to show the tab menu.
+				hud.palette.debug_open_menu(0)
+				for i in 5:
+					await get_tree().process_frame
+		if args.has("pick"):
+			# Debug: --pick=<object name> clicks that palette tile.
+			var pid := ""
+			for d in project.defs.values():
+				if d.name == str(args.pick).replace("_", " "):
+					pid = d.id
+			if pid != "":
+				hud.palette.picked.emit(pid)
+				for i in 10:
+					await get_tree().physics_frame
+				print("picked grab=%s palette_open=%s" % [not _grab.is_empty(), hud.palette_open()])
 		if args.has("panel"):
 			var tp := Time.get_ticks_usec()
 			_toggle_panel(true)
@@ -305,6 +335,10 @@ func _connect_hud() -> void:
 		_after_context_change())
 	hud.reparent_requested.connect(_reparent)
 	hud.place_object.connect(_place_from_library)
+	hud.palette.picked.connect(_place_from_library)
+	hud.palette.category_chosen.connect(func(id, c):
+		project.set_def_category(id, c)
+		hud.toast("%s is now under %s" % [project.defs[id].name, c if c != "" else PalettePanel.OTHER]))
 	hud.rename_object.connect(func(id, n): project.rename_def(id, n))
 	hud.delete_object.connect(_delete_def)
 	hud.export_object.connect(func(id, path):
@@ -414,6 +448,9 @@ func _process(_delta: float) -> void:
 	if _outline_dirty and hud.panel_open():
 		hud.refresh_outline(project, edit_path, selected)
 		hud.refresh_library(project)
+		_outline_dirty = false
+	if _outline_dirty and hud.palette_open():
+		hud.palette.refresh(project, _edit_def().id)
 		_outline_dirty = false
 	_draw_overlay()
 	tree_lines.update_from(view, project)
@@ -538,7 +575,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed:
 		if not captured:
-			if not hud.panel_open():
+			if not hud.panel_open() and not hud.palette_open():
 				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 			return
 		_on_click(event)
@@ -593,10 +630,13 @@ func _on_key(event: InputEventKey) -> void:
 		KEY_ESCAPE:
 			if not _grab.is_empty():
 				_end_grab(false)
+			elif hud.palette_open():
+				_toggle_palette(false)
 			else:
 				_toggle_panel(false)
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		KEY_TAB: _toggle_panel(not hud.panel_open())
+		KEY_E: _toggle_palette(not hud.palette_open())
 		KEY_H: hud.toggle_help()
 		KEY_F:
 			player.flying = not player.flying
@@ -640,6 +680,15 @@ func _toggle_panel(on: bool) -> void:
 	hud.show_panel(on)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if on else Input.MOUSE_MODE_CAPTURED
 	_outline_dirty = true
+
+
+func _toggle_palette(on: bool) -> void:
+	if on and not _grab.is_empty():
+		return
+	hud.show_palette(on)
+	if on:
+		hud.palette.refresh(project, _edit_def().id)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if on else Input.MOUSE_MODE_CAPTURED
 
 
 func _resize_player(dir: int) -> void:
@@ -888,6 +937,8 @@ func _place_from_library(def_id: String) -> void:
 	_start_grab(path, true)
 	if hud.panel_open():
 		_toggle_panel(false)
+	if hud.palette_open():
+		hud.show_palette(false)
 
 
 func _rotate_selected() -> void:

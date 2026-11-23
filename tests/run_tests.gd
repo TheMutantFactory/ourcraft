@@ -60,6 +60,10 @@ func _run() -> void:
 	test_corner_names_and_history()
 	test_corner_import_existing_id()
 	test_demo_tree_depth()
+	test_category_round_trip()
+	test_palette_groups()
+	test_thumbnail_signature()
+	test_thumbnail_stage_and_framing()
 	print("%d checks, %d failed" % [_count, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -1014,3 +1018,104 @@ func test_demo_tree_depth() -> void:
 		path.append(def.children[-1].id)
 		def = p.defs[def.children[-1].def_id]
 	check(p.path_label(path) == "World › Street › House › Kitchen › Table › Fork", "demo depth: " + p.path_label(path))
+
+
+func _def_named(p: Project, n: String) -> ObjectDef:
+	for d in p.defs.values():
+		if d.name == n:
+			return d
+	return null
+
+
+## Palette categories survive save/load (including an incremental save
+## after a change), export/import and forking.
+func test_category_round_trip() -> void:
+	var p := Demo.build(0.01)
+	var table := _def_named(p, "Table")
+	check(table.category == "Surfaces & storage", "demo files the table")
+	var dir := ProjectSettings.globalize_path("user://test_projects/cat.ourcraft")
+	check(p.save_dir(dir) == OK, "save")
+	p.set_def_category(table.id, "Light")
+	check(p.save_dir(dir) == OK, "incremental save")
+	var q := Project.load_dir(dir)
+	check(q != null and q.defs[table.id].category == "Light", "changed category saved incrementally")
+	p.set_def_category(table.id, "")
+	check(p.defs[table.id].to_dict().has("category") == false, "empty category not written")
+	p.set_def_category(table.id, "Life")
+	var fork := p.fork_def(table.id)
+	check(fork.category == "Life", "fork keeps the category")
+	var file := ProjectSettings.globalize_path("user://test_projects/cat.ourobj.json")
+	check(p.export_object(table.id, file) == OK, "export")
+	var r := Project.create_empty(0.01)
+	var id := r.import_bundle(file)
+	check(id != "" and r.defs[id].category == "Life", "bundle keeps the category")
+
+
+func test_palette_groups() -> void:
+	var p := Demo.build(0.01)
+	var g := PalettePanel.group(p)
+	check(g.size() == ObjectDef.CATEGORIES.size() + 1, "one group per tab plus Other")
+	var all := []
+	for t in g:
+		all.append_array(g[t])
+	check(not all.has(p.root_id), "the world isn't in the palette")
+	check(all.size() == p.defs.size() - 1, "every other object is in exactly one tab")
+	check(g["Life"].size() == 2 and p.defs[g["Life"][0]].name == "Fork", "Life holds fork and plate, sorted")
+	var odd := p.create_def("Odd", 1)
+	odd.category = "Not a tab"
+	g = PalettePanel.group(p)
+	check(g[PalettePanel.OTHER].has(odd.id), "unknown category goes to Other")
+
+
+func test_thumbnail_signature() -> void:
+	var p := Demo.build(0.01)
+	var table := _def_named(p, "Table")
+	var plate := _def_named(p, "Plate")
+	var house := _def_named(p, "House")
+	var s0 := Thumbnailer.signature(p, table.id)
+	check(s0 == Thumbnailer.signature(p, table.id), "signature is stable")
+	var h0 := Thumbnailer.signature(p, house.id)
+	p.edit_box(plate.id, Vector3i(0, 5, 0), Vector3i(1, 6, 1), 3)
+	check(Thumbnailer.signature(p, table.id) != s0, "editing a nested object changes the parent's picture")
+	check(Thumbnailer.signature(p, house.id) != h0, "...and the grandparent's")
+	var s1 := Thumbnailer.signature(p, table.id)
+	var inst: ObjectInstance = table.children[0]
+	p.set_instance_transform(table.id, inst.id, inst.offset + Vector3i(1, 0, 0), inst.rot)
+	check(Thumbnailer.signature(p, table.id) != s1, "moving a child changes it")
+	var s2 := Thumbnailer.signature(p, table.id)
+	p.rename_def(table.id, "Desk")
+	p.set_def_category(table.id, "Light")
+	check(Thumbnailer.signature(p, table.id) == s2, "name and tab don't change the picture")
+	p.palette[3] = Color.RED
+	check(Thumbnailer.signature(p, table.id) != s2, "recolouring the palette changes it")
+
+
+func test_thumbnail_stage_and_framing() -> void:
+	var p := Demo.build(0.01)
+	var t := Thumbnailer.new()
+	t.use_disk = false
+	root.add_child(t)
+	var table := _def_named(p, "Table")
+	var box := t.build_stage(p, table.id)
+	# Table: own chunks plus two plates and two forks.
+	check(t.stage_mesh_count() >= 5, "stage draws the table and its nested objects (%d)" % t.stage_mesh_count())
+	check(box.size.x > 1.0 and box.size.x < 1.5, "table bounds in metres (%.2f)" % box.size.x)
+	var xf := Thumbnailer.frame(box)
+	var fwd := -xf.basis.z
+	var half := deg_to_rad(Thumbnailer.FOV) * 0.5
+	var inside := true
+	for i in 8:
+		var c := box.get_endpoint(i) - xf.origin
+		if c.dot(fwd) <= 0.0 or c.normalized().angle_to(fwd) > half:
+			inside = false
+	check(inside, "every corner of the object is in view")
+	check(xf.origin.y > box.get_center().y, "camera looks down at the object")
+	var empty := p.create_def("Empty", 1)
+	var eb := t.build_stage(p, empty.id)
+	check(t.stage_mesh_count() == 0 and eb.size != Vector3.ZERO, "empty object gets a placeholder frame")
+	var tex := t.request(p, table.id)
+	check(tex == null and t.pending() == 1, "a missing thumbnail is queued")
+	t.request(p, table.id)
+	check(t.pending() == 1, "requests for the same picture are merged")
+	t.clear_queue()
+	t.free()

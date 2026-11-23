@@ -65,6 +65,14 @@ static func build(voxel_size_m: float) -> Project:
 	street.children.append(_inst(p, house.id, Vector3i(2400, 0, 1120), 2))
 
 	p.root().children.append(_inst(p, street.id, Vector3i(-1500, 0, 0), 0))
+
+	# Palette tabs (E).
+	for d in [fork, plate]:
+		d.category = "Life"
+	for d in [table, kitchen]:
+		d.category = "Surfaces & storage"
+	for d in [house, street]:
+		d.category = "Structure"
 	return p
 
 

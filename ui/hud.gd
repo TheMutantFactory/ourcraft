@@ -34,6 +34,8 @@ var min_block_spin: SpinBox
 var unit_option: OptionButton
 var ui_scale_spin: SpinBox
 var file_dialog: FileDialog
+## The object palette (E); see PalettePanel.
+var palette: PalettePanel
 
 var _toast_time := 0.0
 var _swatches: Array = []
@@ -133,6 +135,9 @@ func _ready() -> void:
 
 	_build_panel(root)
 
+	palette = PalettePanel.new()
+	root.add_child(palette)
+
 	file_dialog = FileDialog.new()
 	file_dialog.access = FileDialog.ACCESS_FILESYSTEM
 	file_dialog.use_native_dialog = true
@@ -153,7 +158,7 @@ N new object · G move · R rotate · Del delete · B burst
 Ctrl+C copy · Ctrl+V paste · Ctrl+D duplicate
 U make unique · Ctrl+Z undo · Ctrl+Shift+Z redo
 Ctrl+S save · Ctrl+O reload · Ctrl+ +/− text size
-Tab panel · H close this"""
+E palette · Tab panel · H close this"""
 
 
 func _pin_top_right(c: Control, top: float, width: float) -> void:
@@ -369,6 +374,18 @@ func show_panel(on: bool) -> void:
 	panel.visible = on
 	if on:
 		help_panel.visible = false
+		palette.visible = false
+
+
+func show_palette(on: bool) -> void:
+	palette.visible = on
+	if on:
+		help_panel.visible = false
+		panel.visible = false
+
+
+func palette_open() -> bool:
+	return palette.visible
 
 
 func panel_open() -> bool:
